@@ -45,3 +45,12 @@ def get_stream(key: str, fileobj) -> None:
 
 def delete_object(key: str) -> None:
     _client().delete_object(Bucket=get_settings().s3_bucket, Key=key)
+
+def object_size(key: str) -> int:
+    return _client().head_object(Bucket=get_settings().s3_bucket, Key=key)["ContentLength"]
+
+def get_range(key: str, start: int, end: int) -> bytes:
+    """Inclusive byte range, matching HTTP Range semantics."""
+    r = _client().get_object(Bucket=get_settings().s3_bucket, Key=key,
+                             Range=f"bytes={start}-{end}")
+    return r["Body"].read()

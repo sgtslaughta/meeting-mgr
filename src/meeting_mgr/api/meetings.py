@@ -1,8 +1,8 @@
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import (Meeting, Organization, Recording, Segment,
                                 KeyTopic, Minute, ActionItem, DecisionPoint)
-from meeting_mgr.storage import ensure_bucket, put_stream
+from meeting_mgr.storage import ensure_bucket, get_range, object_size, put_stream
 
 router = APIRouter()
 
@@ -73,3 +73,37 @@ def read_meeting(meeting_id: int):
             "minutes": rows(Minute), "action_items": rows(ActionItem),
             "decision_points": rows(DecisionPoint),
         }
+
+@router.get("/meetings/{meeting_id}/audio")
+def read_audio(meeting_id: int, request: Request):
+    with get_readonly_session() as s:
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one_or_none()
+        key = rec.normalized_key if rec else None
+    if not key:
+        raise HTTPException(404, "no normalized audio for this meeting")
+
+    size = object_size(key)
+    range_header = request.headers.get("range")
+    if not range_header:
+        return Response(get_range(key, 0, size - 1), media_type="audio/wav",
+                        headers={"accept-ranges": "bytes"})
+
+    # "bytes=start-" and "bytes=start-end" are the only forms browsers send
+    # for media seeking; anything else falls back to the whole object.
+    raw = range_header.removeprefix("bytes=")
+    start_s, _, end_s = raw.partition("-")
+    try:
+        start = int(start_s)
+        end = int(end_s) if end_s else size - 1
+    except ValueError:
+        return Response(get_range(key, 0, size - 1), media_type="audio/wav",
+                        headers={"accept-ranges": "bytes"})
+    end = min(end, size - 1)
+    if start > end:
+        raise HTTPException(416, "range not satisfiable")
+
+    return Response(
+        get_range(key, start, end), status_code=206, media_type="audio/wav",
+        headers={"accept-ranges": "bytes",
+                 "content-range": f"bytes {start}-{end}/{size}"},
+    )
