@@ -52,7 +52,12 @@ services:
       minio: { condition: service_started }
   worker:
     build: .
+    # -I: celery_app itself defines no tasks — run_pipeline and
+    # regenerate_artifact live in orchestrate.py/edits.py, which nothing else
+    # imports before the worker boots. Without this the worker starts clean
+    # but silently discards every task as "unregistered".
     command: celery -A meeting_mgr.pipeline.app worker -l info
+      -I meeting_mgr.pipeline.orchestrate,meeting_mgr.api.edits
     environment: *app_env
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -66,5 +71,11 @@ services:
       resources:
         reservations:
           devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+  web:
+    build: ./web
+    ports: ["5173:80"]
+    depends_on:
+      api: { condition: service_started }
 
 volumes: { pgdata: {}, redisdata: {}, miniodata: {} }

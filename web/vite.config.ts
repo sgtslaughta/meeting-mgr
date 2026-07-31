@@ -9,5 +9,8 @@ export default defineConfig({
     // <audio> same-origin so no CORS config is needed anywhere.
     proxy: { "/meetings": "http://localhost:8000" },
   },
-  test: { environment: "jsdom", globals: true, setupFiles: "./tests/setup.ts" },
+  test: {
+    environment: "jsdom", globals: true, setupFiles: "./tests/setup.ts",
+    exclude: ["**/node_modules/**", "e2e/**"],
+  },
 });
