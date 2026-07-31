@@ -8,6 +8,7 @@ class SpeakerCluster(Base):
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meeting.id", ondelete="CASCADE"))
     label: Mapped[str] = mapped_column(String(50))          # e.g. "SPEAKER_00"
     embedding: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    spans: Mapped[list] = mapped_column(JSON, default=list)
 
 class Segment(Base):
     __tablename__ = "segment"
