@@ -1,8 +1,10 @@
-from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import (Meeting, Organization, Recording, Segment,
                                 KeyTopic, Minute, ActionItem, DecisionPoint)
-from meeting_mgr.storage import ensure_bucket, get_range, object_size, put_stream
+from meeting_mgr.storage import (RangeNotSatisfiable, ensure_bucket,
+                                 open_object, put_stream)
 
 router = APIRouter()
 
@@ -74,6 +76,29 @@ def read_meeting(meeting_id: int):
             "decision_points": rows(DecisionPoint),
         }
 
+def _valid_range(header: str | None) -> str | None:
+    """Pass through only the forms browsers send for media seeking.
+
+    Anything else returns None, which serves the whole object. A media element
+    that receives the full file still works; one that receives a 400 does not.
+    """
+    if not header or not header.startswith("bytes="):
+        return None
+    start_s, sep, end_s = header.removeprefix("bytes=").partition("-")
+    if not sep or not start_s.isdigit():
+        return None
+    if end_s and not end_s.isdigit():
+        return None
+    return header
+
+def _chunks(stream, size: int = 1 << 16):
+    """Yield the body in chunks so an hour of audio never lands in memory."""
+    try:
+        while chunk := stream.read(size):
+            yield chunk
+    finally:
+        stream.close()
+
 @router.get("/meetings/{meeting_id}/audio")
 def read_audio(meeting_id: int, request: Request):
     with get_readonly_session() as s:
@@ -82,28 +107,16 @@ def read_audio(meeting_id: int, request: Request):
     if not key:
         raise HTTPException(404, "no normalized audio for this meeting")
 
-    size = object_size(key)
-    range_header = request.headers.get("range")
-    if not range_header:
-        return Response(get_range(key, 0, size - 1), media_type="audio/wav",
-                        headers={"accept-ranges": "bytes"})
-
-    # "bytes=start-" and "bytes=start-end" are the only forms browsers send
-    # for media seeking; anything else falls back to the whole object.
-    raw = range_header.removeprefix("bytes=")
-    start_s, _, end_s = raw.partition("-")
     try:
-        start = int(start_s)
-        end = int(end_s) if end_s else size - 1
-    except ValueError:
-        return Response(get_range(key, 0, size - 1), media_type="audio/wav",
-                        headers={"accept-ranges": "bytes"})
-    end = min(end, size - 1)
-    if start > end:
+        stream, content_range, length = open_object(
+            key, _valid_range(request.headers.get("range")))
+    except RangeNotSatisfiable:
         raise HTTPException(416, "range not satisfiable")
 
-    return Response(
-        get_range(key, start, end), status_code=206, media_type="audio/wav",
-        headers={"accept-ranges": "bytes",
-                 "content-range": f"bytes {start}-{end}/{size}"},
+    headers = {"accept-ranges": "bytes", "content-length": str(length)}
+    if content_range:
+        headers["content-range"] = content_range
+    return StreamingResponse(
+        _chunks(stream), status_code=206 if content_range else 200,
+        media_type="audio/wav", headers=headers,
     )
