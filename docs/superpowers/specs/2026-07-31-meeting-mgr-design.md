@@ -4,7 +4,8 @@
 **Status:** Approved
 **Source:** `plans/project_vision.md`, sharpened through a 12-question grilling session.
 
-Terminology in this document is defined in [`CONTEXT.md`](../../../CONTEXT.md).
+Terminology in this document is defined in
+[`CONTEXT.md`](https://github.com/sgtslaughta/meeting-mgr/blob/main/CONTEXT.md).
 Capitalised terms are glossary terms and are used exactly as defined there.
 
 ---
