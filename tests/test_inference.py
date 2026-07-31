@@ -18,14 +18,19 @@ def test_structured_chat_retries_then_raises(fake_inference):
         structured_chat("go", Topics, base_url=f"{fake_inference.base_url}/v1")
     assert len(fake_inference.requests) == 3
 
-def test_structured_chat_retries_on_empty_choices(fake_inference):
-    # The fake server returns a well-formed envelope, so simulate the malformed
-    # shape by pushing an error instead is NOT what we want here — instead push
-    # three responses and assert InferenceError, proving IndexError is caught.
+def test_structured_chat_retries_when_choices_is_empty(fake_inference):
     for _ in range(3):
-        fake_inference.push_error(500)
+        fake_inference.push_raw({"choices": []})
     with pytest.raises(InferenceError):
         structured_chat("go", Topics, base_url=f"{fake_inference.base_url}/v1")
+    assert len(fake_inference.requests) == 3, "should retry all 3 attempts"
+
+def test_structured_chat_retries_when_body_is_not_an_object(fake_inference):
+    for _ in range(3):
+        fake_inference.push_raw(["not", "a", "dict"])
+    with pytest.raises(InferenceError):
+        structured_chat("go", Topics, base_url=f"{fake_inference.base_url}/v1")
+    assert len(fake_inference.requests) == 3, "should retry all 3 attempts"
 
 def test_transcribe_audio_returns_segments(fake_inference):
     fake_inference.push_transcription(

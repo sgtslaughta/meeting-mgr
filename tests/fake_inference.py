@@ -5,12 +5,14 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 class FakeInference:
     def __init__(self):
         self.chat, self.transcriptions, self.errors = deque(), deque(), deque()
+        self.raw = deque()   # verbatim chat bodies, for malformed-shape tests
         self.requests = []
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
         self.base_url = f"http://127.0.0.1:{self._server.server_port}"
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
     def push_chat(self, obj): self.chat.append(obj)
+    def push_raw(self, body): self.raw.append(body)   # sent verbatim, no envelope
     def push_transcription(self, obj): self.transcriptions.append(obj)
     def push_error(self, status): self.errors.append(status)
     def stop(self):
@@ -35,8 +37,11 @@ class FakeInference:
                     self.wfile.write(raw)
                     return
                 if self.path.endswith("/chat/completions"):
-                    payload = outer.chat.popleft() if outer.chat else {}
-                    body = {"choices": [{"message": {"content": json.dumps(payload)}}]}
+                    if outer.raw:
+                        body = outer.raw.popleft()
+                    else:
+                        payload = outer.chat.popleft() if outer.chat else {}
+                        body = {"choices": [{"message": {"content": json.dumps(payload)}}]}
                 elif self.path.endswith("/audio/transcriptions"):
                     body = outer.transcriptions.popleft() if outer.transcriptions else {"segments": []}
                 else:
