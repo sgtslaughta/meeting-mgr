@@ -10,11 +10,18 @@ def _client():
         aws_secret_access_key=s.s3_secret_key,
     )
 
+_MISSING = {"404", "NoSuchBucket", "NotFound"}
+
 def ensure_bucket() -> None:
     b = get_settings().s3_bucket
     try:
         _client().head_bucket(Bucket=b)
-    except ClientError:
+    except ClientError as e:
+        # Only "bucket is missing" justifies creating it. A 403 means bad
+        # credentials and a connection error means the endpoint is wrong —
+        # both must surface as themselves, not as a create_bucket failure.
+        if e.response.get("Error", {}).get("Code") not in _MISSING:
+            raise
         _client().create_bucket(Bucket=b)
 
 def put_object(key: str, data: bytes) -> None:
