@@ -38,3 +38,16 @@ def test_attribute_skips_unnamed_clusters(monkeypatch, make_meeting):
     with get_session() as s:
         assert (s.query(Attribution).join(SpeakerCluster)
                 .filter(SpeakerCluster.meeting_id == mid).count() == 0)
+
+def test_attribute_skips_whitespace_only_names(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); _seed(mid)
+    monkeypatch.setattr(
+        "meeting_mgr.pipeline.attribute.structured_chat",
+        lambda prompt, schema, **kw: AttributionProposal.model_validate(
+            {"names": [{"label": "SPEAKER_00", "name": "   "}]}),
+    )
+    attribute(mid)
+    with get_session() as s:
+        assert (s.query(Attribution).join(SpeakerCluster)
+                 .filter(SpeakerCluster.meeting_id == mid).count()) == 0, \
+            "a whitespace-only name identifies nobody and must not be attributed"

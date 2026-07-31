@@ -1,6 +1,7 @@
 from meeting_mgr.db import get_session
 from meeting_mgr.models import Meeting
 from meeting_mgr.pipeline.app import celery_app, set_stage_failure
+from meeting_mgr.progress import publish as publish_progress
 from meeting_mgr.pipeline.align import align
 from meeting_mgr.pipeline.attribute import attribute
 from meeting_mgr.pipeline.diarize import diarize
@@ -32,15 +33,25 @@ STAGES = [
     ("publish", publish),
 ]
 
+def _set_current_stage(meeting_id: int, stage: str | None) -> None:
+    with get_session() as s:
+        s.get(Meeting, meeting_id).current_stage = stage
+
 @celery_app.task(name="meeting_mgr.run_pipeline")
 def run_pipeline(meeting_id: int, from_stage: str | None = None) -> None:
     names = [n for n, _ in STAGES]
     start = names.index(from_stage) if from_stage else 0
     for name, fn in STAGES[start:]:
+        _set_current_stage(meeting_id, name)
+        publish_progress(meeting_id, name, "started")
         try:
             fn(meeting_id)
         except Exception:
             set_stage_failure(meeting_id, name)
+            publish_progress(meeting_id, name, "failed")
             if name in OPTIONAL_STAGES:
                 continue
+            _set_current_stage(meeting_id, None)
             raise
+        publish_progress(meeting_id, name, "finished")
+    _set_current_stage(meeting_id, None)

@@ -1,8 +1,14 @@
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+import json
+
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from meeting_mgr.db import get_readonly_session, get_session
-from meeting_mgr.models import (Meeting, Organization, Recording, Segment,
+from meeting_mgr.models import (Attribution, Meeting, Organization,
+                                Participant, Recording, Segment, SpeakerCluster,
                                 KeyTopic, Minute, ActionItem, DecisionPoint)
-from meeting_mgr.storage import ensure_bucket, put_stream
+from meeting_mgr.progress import subscribe
+from meeting_mgr.storage import (RangeNotSatisfiable, ensure_bucket,
+                                 open_object, put_stream)
 
 router = APIRouter()
 
@@ -17,6 +23,7 @@ _FIELDS = {
                  "citations", "provenance"),
     DecisionPoint: ("id", "text", "settled", "positions", "citations",
                     "provenance"),
+    SpeakerCluster: ("id", "label", "spans"),
 }
 
 def run_pipeline(meeting_id: int) -> None:
@@ -43,6 +50,17 @@ def create_meeting(title: str = Form(...), file: UploadFile = File(...)):
     run_pipeline(meeting_id)
     return {"meeting_id": meeting_id, "status": "pending"}
 
+@router.get("/meetings")
+def list_meetings():
+    with get_readonly_session() as s:
+        rows = s.query(Meeting).order_by(Meeting.id.desc()).all()
+        return [
+            {"id": m.id, "title": m.title, "status": m.status,
+             "current_stage": m.current_stage, "failed_stage": m.failed_stage,
+             "created_at": m.created_at}
+            for m in rows
+        ]
+
 @router.get("/meetings/{meeting_id}")
 def read_meeting(meeting_id: int):
     with get_readonly_session() as s:
@@ -58,7 +76,87 @@ def read_meeting(meeting_id: int):
         return {
             "id": m.id, "title": m.title, "status": m.status,
             "failed_stage": m.failed_stage,
-            "segments": rows(Segment), "key_topics": rows(KeyTopic),
+            "segments": rows(Segment), "clusters": rows(SpeakerCluster),
+            "attributions": [
+                {"cluster_id": a.cluster_id, "participant_id": a.participant_id,
+                 "participant_name": s.get(Participant, a.participant_id).name,
+                 "provenance": a.provenance}
+                for a in s.query(Attribution).join(SpeakerCluster)
+                          .filter(SpeakerCluster.meeting_id == meeting_id).all()
+            ],
+            "key_topics": rows(KeyTopic),
             "minutes": rows(Minute), "action_items": rows(ActionItem),
             "decision_points": rows(DecisionPoint),
         }
+
+@router.get("/meetings/{meeting_id}/events")
+def stream_events(meeting_id: int):
+    with get_readonly_session() as s:
+        m = s.get(Meeting, meeting_id)
+        if m is None:
+            raise HTTPException(404, "meeting not found")
+        snapshot = {"status": m.status, "current_stage": m.current_stage,
+                    "failed_stage": m.failed_stage}
+
+    def events():
+        # A client that connects mid-run, or reloads, missed every prior
+        # event — Redis pub/sub has no backlog. The snapshot is what makes
+        # reconnect and refresh work.
+        yield f"data: {json.dumps(snapshot)}\n\n"
+        if snapshot["status"] in ("published", "failed"):
+            return
+        for event in subscribe(meeting_id):
+            yield f"data: {json.dumps(event)}\n\n"
+            finished_publish = (event.get("stage") == "publish" and
+                                event.get("state") == "finished")
+            if finished_publish or event.get("state") == "failed":
+                return
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"cache-control": "no-cache",
+                                      "x-accel-buffering": "no"})
+
+def _valid_range(header: str | None) -> str | None:
+    """Pass through only the forms browsers send for media seeking.
+
+    Anything else returns None, which serves the whole object. A media element
+    that receives the full file still works; one that receives a 400 does not.
+    """
+    if not header or not header.startswith("bytes="):
+        return None
+    start_s, sep, end_s = header.removeprefix("bytes=").partition("-")
+    if not sep or not start_s.isdigit():
+        return None
+    if end_s and not end_s.isdigit():
+        return None
+    return header
+
+def _chunks(stream, size: int = 1 << 16):
+    """Yield the body in chunks so an hour of audio never lands in memory."""
+    try:
+        while chunk := stream.read(size):
+            yield chunk
+    finally:
+        stream.close()
+
+@router.get("/meetings/{meeting_id}/audio")
+def read_audio(meeting_id: int, request: Request):
+    with get_readonly_session() as s:
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one_or_none()
+        key = rec.normalized_key if rec else None
+    if not key:
+        raise HTTPException(404, "no normalized audio for this meeting")
+
+    try:
+        stream, content_range, length = open_object(
+            key, _valid_range(request.headers.get("range")))
+    except RangeNotSatisfiable:
+        raise HTTPException(416, "range not satisfiable")
+
+    headers = {"accept-ranges": "bytes", "content-length": str(length)}
+    if content_range:
+        headers["content-range"] = content_range
+    return StreamingResponse(
+        _chunks(stream), status_code=206 if content_range else 200,
+        media_type="audio/wav", headers=headers,
+    )

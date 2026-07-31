@@ -41,3 +41,26 @@ def test_extraction_failure_does_not_block_publish(monkeypatch, make_meeting):
     with get_session() as s:
         m = s.get(Meeting, mid)
         assert m.status == "published" and m.failed_stage == "key_topics"
+
+def test_pipeline_publishes_transitions_and_clears_current_stage(
+        monkeypatch, make_meeting):
+    from meeting_mgr.models import Meeting
+    events = []
+    monkeypatch.setattr(orch, "publish_progress",
+                        lambda mid, stage, state: events.append((stage, state)))
+    monkeypatch.setattr(orch, "STAGES", [("normalize", lambda m: None)])
+    mid = make_meeting(b"RIFFfake")
+    orch.run_pipeline(mid)
+    assert ("normalize", "started") in events
+    assert ("normalize", "finished") in events
+    with get_session() as s:
+        assert s.get(Meeting, mid).current_stage is None, "must not stay mid-stage"
+
+def test_the_publish_stage_still_exists_after_the_import(make_meeting):
+    # Guards the collision above: if progress.publish shadowed the stage
+    # function, STAGES' last entry would no longer mark meetings published.
+    from meeting_mgr.models import Meeting
+    mid = make_meeting(b"RIFFfake")
+    orch.publish(mid)
+    with get_session() as s:
+        assert s.get(Meeting, mid).status == "published"

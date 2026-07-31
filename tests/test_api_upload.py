@@ -3,7 +3,7 @@ import io
 from fastapi.testclient import TestClient
 from meeting_mgr.api.main import app
 from meeting_mgr.db import get_session
-from meeting_mgr.models import ActionItem
+from meeting_mgr.models import ActionItem, SpeakerCluster
 from meeting_mgr.storage import get_object
 
 def test_upload_creates_meeting_and_stores_recording(monkeypatch):
@@ -60,3 +60,18 @@ def test_read_meeting_exposes_only_allowlisted_fields(monkeypatch):
         "id", "text", "participant_id", "due_date", "status",
         "citations", "provenance",
     }
+
+
+def test_read_meeting_exposes_clusters_but_never_embeddings(monkeypatch):
+    monkeypatch.setattr("meeting_mgr.api.meetings.run_pipeline", lambda mid: None)
+    c = TestClient(app)
+    mid = c.post("/meetings", data={"title": "t"},
+                 files={"file": ("a.m4a", b"A", "audio/mp4")}).json()["meeting_id"]
+    with get_session() as s:
+        s.add(SpeakerCluster(meeting_id=mid, label="SPEAKER_00",
+                             spans=[{"start": 0.0, "end": 2.0}],
+                             embedding=[0.1, 0.2]))
+    body = c.get(f"/meetings/{mid}").json()
+    assert set(body["clusters"][0]) == {"id", "label", "spans"}
+    assert "embedding" not in body["clusters"][0], \
+        "voice embeddings are biometric data and must not reach the browser"

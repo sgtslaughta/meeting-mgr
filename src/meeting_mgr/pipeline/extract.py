@@ -1,9 +1,9 @@
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.inference.llm import structured_chat
 from meeting_mgr.models import (ActionItem, DecisionPoint, KeyTopic, Meeting,
-                                Minute, Participant, Segment, SpeakerCluster)
+                                Minute, Segment, SpeakerCluster)
+from meeting_mgr.participants import resolve_participant
 
 class TopicOut(BaseModel):
     title: str
@@ -70,26 +70,6 @@ def _valid_segment_ids(meeting_id: int) -> set[int]:
 def _cited(citations: list[int], valid: set[int]) -> list[int]:
     return [c for c in citations if c in valid]
 
-def _resolve_participant(s, org_id: int, name: str | None) -> int | None:
-    """Same (organization_id, name) rule the attribution stage uses, so a name
-    resolves to one Participant however it was discovered."""
-    if not name or not name.strip():
-        return None
-    p = (s.query(Participant)
-          .filter_by(organization_id=org_id, name=name).one_or_none())
-    if p is not None:
-        return p.id
-    try:
-        # SAVEPOINT: if a concurrent worker wins the race, only this insert is
-        # rolled back, not the whole session's work.
-        with s.begin_nested():
-            p = Participant(organization_id=org_id, name=name)
-            s.add(p)
-        return p.id
-    except IntegrityError:
-        return (s.query(Participant)
-                 .filter_by(organization_id=org_id, name=name).one().id)
-
 def extract_key_topics(meeting_id: int) -> None:
     out = _ask(meeting_id,
                'List the subjects the meeting spent meaningful time on. '
@@ -133,7 +113,7 @@ def extract_action_items(meeting_id: int) -> None:
                 continue
             participant_id = None
             if a.participant_name:
-                participant_id = _resolve_participant(s, org_id, a.participant_name)
+                participant_id = resolve_participant(s, org_id, a.participant_name)
             s.add(ActionItem(meeting_id=meeting_id, text=a.text,
                              participant_id=participant_id,
                              citations=citations, provenance="inferred"))
@@ -155,7 +135,7 @@ def extract_decision_points(meeting_id: int) -> None:
                 continue
             positions = []
             for pos in d.positions:
-                pid = _resolve_participant(s, org_id, pos.participant_name)
+                pid = resolve_participant(s, org_id, pos.participant_name)
                 if pid is None:
                     continue   # a position with no identifiable holder is not a position
                 positions.append({"participant_id": pid, "position": pos.position})
