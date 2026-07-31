@@ -1,0 +1,149 @@
+name: security
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Advisories appear without code changing; catch those weekly.
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          version: "0.11.28"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: uv audit (locked dependencies)
+        run: uv audit --preview-features audit-command
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: npm audit, excluding accepted advisories
+        run: |
+          set -euo pipefail
+
+          # GHSA-qwww-vcr4-c8h2: react-router 7.12.0-8.2.0, reached via our
+          # direct react-router-dom dependency. Tracked in issue #34,
+          # awaiting a human call -- the only fix is a breaking downgrade to
+          # 7.11.0. The app is a client-side SPA and does not use RSC mode,
+          # so the vulnerable path is unreachable today. Do NOT widen this
+          # list without a matching issue; any other advisory must fail CI.
+          ALLOWLIST="GHSA-qwww-vcr4-c8h2"
+
+          npm audit --json > audit.json || true
+
+          NEW=$(jq -r --arg allow "$ALLOWLIST" '
+            .vulnerabilities
+            | to_entries[]
+            | .value.via[]
+            | select(type=="object")
+            | .url
+            | capture("advisories/(?<id>GHSA-[a-z0-9-]+)").id
+            | select(. != $allow)
+          ' audit.json | sort -u)
+
+          if [ -n "$NEW" ]; then
+            echo "New/unallowlisted advisories found:"
+            echo "$NEW"
+            exit 1
+          fi
+          echo "No advisories outside the allowlist ($ALLOWLIST)."
+
+  container-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - name: api
+            dockerfile: Dockerfile
+            context: .
+          - name: web
+            dockerfile: web/Dockerfile
+            context: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.name }} image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: false
+          load: true
+          tags: meeting-mgr-${{ matrix.name }}:scan
+
+      - name: Trivy scan (${{ matrix.name }})
+        uses: aquasecurity/trivy-action@v0.28.0
+        with:
+          image-ref: meeting-mgr-${{ matrix.name }}:scan
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  codeql:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      matrix:
+        language: [python, javascript-typescript]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
