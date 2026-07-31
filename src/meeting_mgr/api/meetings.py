@@ -2,9 +2,22 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import (Meeting, Organization, Recording, Segment,
                                 KeyTopic, Minute, ActionItem, DecisionPoint)
-from meeting_mgr.storage import ensure_bucket, put_object
+from meeting_mgr.storage import ensure_bucket, put_stream
 
 router = APIRouter()
+
+# Explicit per-model field allowlists. Serializing __table__.columns would
+# auto-publish every column later phases add (auth, audit, retention), so
+# exposing a new field must be a deliberate edit here.
+_FIELDS = {
+    Segment: ("id", "start_seconds", "end_seconds", "text", "cluster_id"),
+    KeyTopic: ("id", "title", "citations", "provenance"),
+    Minute: ("id", "text", "citations", "provenance"),
+    ActionItem: ("id", "text", "participant_id", "due_date", "status",
+                 "citations", "provenance"),
+    DecisionPoint: ("id", "text", "settled", "positions", "citations",
+                    "provenance"),
+}
 
 def run_pipeline(meeting_id: int) -> None:
     """Module-level indirection on purpose.
@@ -24,7 +37,7 @@ def create_meeting(title: str = Form(...), file: UploadFile = File(...)):
         m = Meeting(organization_id=org.id, title=title, status="pending")
         s.add(m); s.flush()
         key = f"raw/{m.id}/{file.filename}"
-        put_object(key, file.file.read())
+        put_stream(key, file.file)
         s.add(Recording(meeting_id=m.id, raw_key=key))
         meeting_id = m.id
     run_pipeline(meeting_id)
@@ -37,8 +50,9 @@ def read_meeting(meeting_id: int):
         if m is None:
             raise HTTPException(404, "meeting not found")
         def rows(model):
+            fields = _FIELDS[model]
             return [
-                {c.name: getattr(r, c.name) for c in model.__table__.columns}
+                {f: getattr(r, f) for f in fields}
                 for r in s.query(model).filter_by(meeting_id=meeting_id).all()
             ]
         return {

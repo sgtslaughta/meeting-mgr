@@ -27,6 +27,14 @@ def ensure_bucket() -> None:
 def put_object(key: str, data: bytes) -> None:
     _client().put_object(Bucket=get_settings().s3_bucket, Key=key, Body=data)
 
+def put_stream(key: str, fileobj) -> None:
+    """Stream a file-like object to storage without loading it into memory.
+
+    Recordings are routinely hundreds of MB; upload_fileobj chunks and
+    multiparts automatically, so peak memory is a buffer, not the whole file.
+    """
+    _client().upload_fileobj(fileobj, get_settings().s3_bucket, key)
+
 def get_object(key: str) -> bytes:
     r = _client().get_object(Bucket=get_settings().s3_bucket, Key=key)
     return r["Body"].read()
