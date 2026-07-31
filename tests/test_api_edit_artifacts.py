@@ -1,5 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
+from meeting_mgr.api import edits
 from meeting_mgr.api.main import app
 from meeting_mgr.db import get_session
 from meeting_mgr.models import (ActionItem, DecisionPoint, KeyTopic, Meeting,
@@ -71,3 +72,22 @@ def test_regenerate_replaces_only_that_artifact_type(monkeypatch):
         assert [t.title for t in topics] == ["regenerated"]
         assert s.query(DecisionPoint).filter_by(meeting_id=mid).count() == 1, \
             "regenerating one type must not touch the others"
+
+def test_regenerate_dispatches_via_celery_delay_not_inline(monkeypatch):
+    """task_always_eager (set in conftest for this test session) makes
+    `.delay()` execute synchronously, which hides whether the endpoint truly
+    enqueues or just calls the extractor inline. This test does not rely on
+    eager mode at all: it replaces `.delay` itself with a spy, so the
+    assertion holds regardless of eager mode, and fails if the endpoint ever
+    calls `_run_extraction` directly instead of going through Celery.
+    """
+    mid, _ = _meeting_with_topic()
+    calls = []
+    monkeypatch.setattr(edits._regenerate_task, "delay",
+                        lambda *a, **kw: calls.append((a, kw)))
+
+    r = TestClient(app).post(f"/meetings/{mid}/regenerate/key_topics")
+
+    assert r.status_code == 202
+    assert calls == [((mid, "key_topics"), {})], \
+        "regenerate must dispatch through Celery's .delay, not run inline"
