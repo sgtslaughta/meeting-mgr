@@ -37,6 +37,9 @@ services:
       LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:8080/v1}"
       LLM_API_KEY: "${LLM_API_KEY:-unused}"
       LLM_MODEL: "${LLM_MODEL:-local-model}"
+    # host.docker.internal only resolves on Docker Desktop; on vanilla Linux
+    # Docker the default ASR/LLM URLs above need this to reach the host.
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
@@ -45,6 +48,7 @@ services:
     build: .
     command: uvicorn meeting_mgr.api.main:app --host 0.0.0.0 --port 8000
     environment: *app_env
+    extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["8000:8000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -52,13 +56,13 @@ services:
       minio: { condition: service_started }
   worker:
     build: .
-    # -I: celery_app itself defines no tasks — run_pipeline and
-    # regenerate_artifact live in orchestrate.py/edits.py, which nothing else
-    # imports before the worker boots. Without this the worker starts clean
-    # but silently discards every task as "unregistered".
+    # -I: celery_app's include=[...] (app.py) already registers
+    # orchestrate.py/edits.py, so this is redundant but kept as
+    # belt-and-braces.
     command: celery -A meeting_mgr.pipeline.app worker -l info
       -I meeting_mgr.pipeline.orchestrate,meeting_mgr.api.edits
     environment: *app_env
+    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_started }
