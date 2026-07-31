@@ -6,7 +6,10 @@ def overlap(a_start: float, a_end: float, b_start: float, b_end: float) -> float
 
 def align(meeting_id: int) -> None:
     with get_session() as s:
-        clusters = s.query(SpeakerCluster).filter_by(meeting_id=meeting_id).all()
+        clusters = (s.query(SpeakerCluster)
+                     .filter_by(meeting_id=meeting_id)
+                     .order_by(SpeakerCluster.id)
+                     .all())
         spans = [(c.id, c.spans or []) for c in clusters]
         for seg in s.query(Segment).filter_by(meeting_id=meeting_id).all():
             best_id, best = None, 0.0

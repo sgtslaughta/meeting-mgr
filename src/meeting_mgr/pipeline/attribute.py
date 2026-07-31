@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.inference.llm import structured_chat
 from meeting_mgr.models import (Attribution, Meeting, Participant, Segment,
@@ -48,8 +49,16 @@ def attribute(meeting_id: int) -> None:
                             .filter_by(organization_id=org_id, name=proposed.name)
                             .one_or_none())
             if participant is None:
-                participant = Participant(organization_id=org_id, name=proposed.name)
-                s.add(participant); s.flush()
+                try:
+                    # SAVEPOINT: if a concurrent worker wins the race, only
+                    # this insert is rolled back, not the whole session's work.
+                    with s.begin_nested():
+                        participant = Participant(organization_id=org_id, name=proposed.name)
+                        s.add(participant)
+                except IntegrityError:
+                    participant = (s.query(Participant)
+                                    .filter_by(organization_id=org_id, name=proposed.name)
+                                    .one())
             s.add(Attribution(cluster_id=cluster.id,
                               participant_id=participant.id,
                               provenance="inferred"))

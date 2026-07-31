@@ -1,6 +1,7 @@
+import pytest
 from meeting_mgr.db import get_session
 from meeting_mgr.models import (ActionItem, DecisionPoint, KeyTopic, Minute,
-                                Participant, Segment, SpeakerCluster)
+                                Organization, Participant, Segment, SpeakerCluster)
 from meeting_mgr.pipeline import extract as ex
 
 def _seed(mid) -> int:
@@ -128,3 +129,15 @@ def test_no_participant_is_created_for_a_blank_name(monkeypatch, make_meeting):
     with get_session() as s:
         assert s.query(Participant).count() == before, \
             "a blank participant_name must not create a Participant row"
+
+
+def test_participant_name_is_unique_per_organization():
+    from sqlalchemy.exc import IntegrityError
+    with get_session() as s:
+        org = s.query(Organization).filter_by(name="default").one()
+        org_id = org.id
+    with get_session() as s:
+        s.add(Participant(organization_id=org_id, name="Duplicate Test Person"))
+    with pytest.raises(IntegrityError):
+        with get_session() as s:
+            s.add(Participant(organization_id=org_id, name="Duplicate Test Person"))

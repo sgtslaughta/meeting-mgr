@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.inference.llm import structured_chat
 from meeting_mgr.models import (ActionItem, DecisionPoint, KeyTopic, Meeting,
@@ -76,10 +77,18 @@ def _resolve_participant(s, org_id: int, name: str | None) -> int | None:
         return None
     p = (s.query(Participant)
           .filter_by(organization_id=org_id, name=name).one_or_none())
-    if p is None:
-        p = Participant(organization_id=org_id, name=name)
-        s.add(p); s.flush()
-    return p.id
+    if p is not None:
+        return p.id
+    try:
+        # SAVEPOINT: if a concurrent worker wins the race, only this insert is
+        # rolled back, not the whole session's work.
+        with s.begin_nested():
+            p = Participant(organization_id=org_id, name=name)
+            s.add(p)
+        return p.id
+    except IntegrityError:
+        return (s.query(Participant)
+                 .filter_by(organization_id=org_id, name=name).one().id)
 
 def extract_key_topics(meeting_id: int) -> None:
     out = _ask(meeting_id,

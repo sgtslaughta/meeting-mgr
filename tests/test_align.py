@@ -27,3 +27,21 @@ def test_align_assigns_best_overlapping_cluster(make_meeting):
     assert segs["hi"] == a_id
     assert segs["yes"] == b_id
     assert segs["orphan"] is None
+
+def test_align_breaks_an_exact_tie_deterministically(make_meeting):
+    mid = make_meeting(b"RIFFfake")
+    with get_session() as s:
+        a = SpeakerCluster(meeting_id=mid, label="SPEAKER_00",
+                           spans=[{"start": 0.0, "end": 1.0}])
+        b = SpeakerCluster(meeting_id=mid, label="SPEAKER_01",
+                           spans=[{"start": 1.0, "end": 2.0}])
+        s.add_all([a, b]); s.flush()
+        # Straddles both clusters with exactly 0.5s of overlap each.
+        s.add(Segment(meeting_id=mid, start_seconds=0.5, end_seconds=1.5,
+                      text="tied"))
+        lower_id = min(a.id, b.id)
+    for _ in range(3):
+        align(mid)
+        with get_session() as s:
+            seg = s.query(Segment).filter_by(meeting_id=mid, text="tied").one()
+            assert seg.cluster_id == lower_id, "an exact tie must resolve the same way every run"

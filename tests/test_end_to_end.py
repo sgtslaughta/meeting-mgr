@@ -1,8 +1,7 @@
+import re
 import subprocess
 from fastapi.testclient import TestClient
 from meeting_mgr.api.main import app
-from meeting_mgr.db import get_readonly_session
-from meeting_mgr.models import Segment
 from meeting_mgr.pipeline import orchestrate as orch
 from meeting_mgr.pipeline import attribute as attr_mod
 from meeting_mgr.pipeline import extract as ex
@@ -25,8 +24,11 @@ def test_upload_to_published_record(tmp_path, monkeypatch):
 
     def fake_extract(prompt, schema, **kw):
         name = schema.__name__
-        with get_readonly_session() as s:
-            seg_id = s.query(Segment).order_by(Segment.id.desc()).first().id
+        # Read the id from the transcript we were handed, like a real model
+        # would — rather than querying for the globally-latest Segment.
+        m = re.search(r"\[(\d+)\]\[", prompt)
+        assert m, "prompt must contain a cited transcript line"
+        seg_id = int(m.group(1))
         return schema.model_validate({
             "TopicsOut": {"topics": [{"title": "migration", "citations": [seg_id]}]},
             "MinutesOut": {"minutes": [{"text": "Sarah committed", "citations": [seg_id]}]},
