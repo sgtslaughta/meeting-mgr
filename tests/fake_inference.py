@@ -13,7 +13,9 @@ class FakeInference:
     def push_chat(self, obj): self.chat.append(obj)
     def push_transcription(self, obj): self.transcriptions.append(obj)
     def push_error(self, status): self.errors.append(status)
-    def stop(self): self._server.shutdown()
+    def stop(self):
+        self._server.shutdown()      # stop serve_forever's loop
+        self._server.server_close()  # and release the listening socket
 
     def _handler(self):
         outer = self
@@ -23,7 +25,15 @@ class FakeInference:
                 length = int(self.headers.get("content-length", 0))
                 outer.requests.append((self.path, self.rfile.read(length)))
                 if outer.errors:
-                    self.send_response(outer.errors.popleft()); self.end_headers(); return
+                    # Real OpenAI-compatible endpoints send a JSON error body;
+                    # match that so error-path code can parse it.
+                    raw = json.dumps({"error": {"message": "fake failure"}}).encode()
+                    self.send_response(outer.errors.popleft())
+                    self.send_header("content-type", "application/json")
+                    self.send_header("content-length", str(len(raw)))
+                    self.end_headers()
+                    self.wfile.write(raw)
+                    return
                 if self.path.endswith("/chat/completions"):
                     payload = outer.chat.popleft() if outer.chat else {}
                     body = {"choices": [{"message": {"content": json.dumps(payload)}}]}
