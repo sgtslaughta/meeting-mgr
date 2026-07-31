@@ -1,5 +1,11 @@
 from meeting_mgr.models.account import ROLES, Account
-from meeting_mgr.models.meeting import Meeting, Organization, Participant, Recording
+from meeting_mgr.models.meeting import (
+    Meeting,
+    MeetingShare,
+    Organization,
+    Participant,
+    Recording,
+)
 from meeting_mgr.models.record import ActionItem, DecisionPoint, KeyTopic, Minute
 from meeting_mgr.models.transcript import Attribution, Segment, SpeakerCluster
 
@@ -8,6 +14,7 @@ __all__ = [
     "ROLES",
     "Organization",
     "Meeting",
+    "MeetingShare",
     "Recording",
     "Participant",
     "SpeakerCluster",
