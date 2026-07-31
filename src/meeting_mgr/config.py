@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     # Signs the session cookie. This default is a deliberately unsafe
     # placeholder — production deployments MUST override it (see admin guide).
     session_secret: str = "INSECURE-DEV-SESSION-SECRET-DO-NOT-USE-IN-PRODUCTION"
+    # Comma-separated source IPs of trusted mTLS-terminating reverse proxies.
+    # Empty (default) means mTLS is not in use: the identity header is always
+    # stripped, regardless of source. Public env var name: MTLS_PROXY_ALLOWLIST.
+    mtls_proxy_allowlist_raw: str = ""
+
+    @property
+    def mtls_proxy_allowlist(self) -> frozenset[str]:
+        return frozenset(x.strip() for x in self.mtls_proxy_allowlist_raw.split(",") if x.strip())
 
 
 @lru_cache
