@@ -1,3 +1,4 @@
+from datetime import date
 from sqlalchemy import ForeignKey, String, JSON, Boolean, Date
 from sqlalchemy.orm import Mapped, mapped_column
 from meeting_mgr.db import Base
@@ -22,7 +23,7 @@ class ActionItem(_Derived, Base):
     text: Mapped[str] = mapped_column(String)
     participant_id: Mapped[int | None] = mapped_column(
         ForeignKey("participant.id", ondelete="SET NULL"), nullable=True)
-    due_date: Mapped[str | None] = mapped_column(Date, nullable=True)
+    due_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="open")
 
 class DecisionPoint(_Derived, Base):
