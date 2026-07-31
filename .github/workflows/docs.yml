@@ -26,7 +26,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # enablement: true turns Pages on via the API if it is not already
+      # configured, so a fresh fork or clone does not need a manual visit to
+      # repo settings before the first docs deploy succeeds. Without it the
+      # step fails with "Get Pages site failed ... Not Found".
       - uses: actions/configure-pages@v6
+        with:
+          enablement: true
 
       - uses: actions/setup-python@v7
         with:
