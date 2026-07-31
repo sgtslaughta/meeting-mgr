@@ -133,11 +133,18 @@ def test_no_participant_is_created_for_a_blank_name(monkeypatch, make_meeting):
 
 def test_participant_name_is_unique_per_organization():
     from sqlalchemy.exc import IntegrityError
+    name = "Duplicate Test Person"
     with get_session() as s:
-        org = s.query(Organization).filter_by(name="default").one()
-        org_id = org.id
-    with get_session() as s:
-        s.add(Participant(organization_id=org_id, name="Duplicate Test Person"))
-    with pytest.raises(IntegrityError):
+        org_id = s.query(Organization).filter_by(name="default").one().id
+    try:
+        # Clean first: this test must pass on a database it has already run against.
         with get_session() as s:
-            s.add(Participant(organization_id=org_id, name="Duplicate Test Person"))
+            s.query(Participant).filter_by(organization_id=org_id, name=name).delete()
+        with get_session() as s:
+            s.add(Participant(organization_id=org_id, name=name))
+        with pytest.raises(IntegrityError):
+            with get_session() as s:
+                s.add(Participant(organization_id=org_id, name=name))
+    finally:
+        with get_session() as s:
+            s.query(Participant).filter_by(organization_id=org_id, name=name).delete()
