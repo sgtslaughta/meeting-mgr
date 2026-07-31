@@ -104,13 +104,25 @@ jobs:
           load: true
           tags: meeting-mgr-${{ matrix.name }}:scan
 
+      # Trivy runs from its own published image rather than via
+      # aquasecurity/trivy-action. The wrapper action pins its own internal
+      # dependency (setup-trivy), and v0.28.0 pinned a version that no longer
+      # exists -- the first real run failed with "Unable to resolve action
+      # aquasecurity/setup-trivy@v0.2.1". Invoking the scanner directly has
+      # one fewer moving part and is exactly what was verified locally.
+      # --ignore-unfixed: only fail on vulnerabilities with a fix available,
+      # so an unfixable base-image CVE cannot block every merge.
       - name: Trivy scan (${{ matrix.name }})
-        uses: aquasecurity/trivy-action@v0.28.0
-        with:
-          image-ref: meeting-mgr-${{ matrix.name }}:scan
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${HOME}/.cache/trivy:/root/.cache/trivy" \
+            aquasec/trivy:latest image \
+              --severity HIGH,CRITICAL \
+              --ignore-unfixed \
+              --exit-code 1 \
+              --no-progress \
+              meeting-mgr-${{ matrix.name }}:scan
 
   secret-scan:
     runs-on: ubuntu-latest
