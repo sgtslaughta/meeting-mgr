@@ -39,5 +39,9 @@ def get_object(key: str) -> bytes:
     r = _client().get_object(Bucket=get_settings().s3_bucket, Key=key)
     return r["Body"].read()
 
+def get_stream(key: str, fileobj) -> None:
+    """Stream storage into a file-like object without buffering it all."""
+    _client().download_fileobj(get_settings().s3_bucket, key, fileobj)
+
 def delete_object(key: str) -> None:
     _client().delete_object(Bucket=get_settings().s3_bucket, Key=key)
