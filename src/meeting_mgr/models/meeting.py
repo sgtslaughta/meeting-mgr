@@ -15,6 +15,7 @@ class Meeting(Base):
     title: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(20), default="pending")
     failed_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    current_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 class Recording(Base):

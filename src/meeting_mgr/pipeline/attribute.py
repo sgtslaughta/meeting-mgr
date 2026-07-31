@@ -1,9 +1,8 @@
 from pydantic import BaseModel
-from sqlalchemy.exc import IntegrityError
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.inference.llm import structured_chat
-from meeting_mgr.models import (Attribution, Meeting, Participant, Segment,
-                                SpeakerCluster)
+from meeting_mgr.models import Attribution, Meeting, Segment, SpeakerCluster
+from meeting_mgr.participants import resolve_participant
 
 class ClusterName(BaseModel):
     label: str
@@ -45,20 +44,9 @@ def attribute(meeting_id: int) -> None:
             cluster = by_label.get(proposed.label)
             if cluster is None or not proposed.name:
                 continue
-            participant = (s.query(Participant)
-                            .filter_by(organization_id=org_id, name=proposed.name)
-                            .one_or_none())
-            if participant is None:
-                try:
-                    # SAVEPOINT: if a concurrent worker wins the race, only
-                    # this insert is rolled back, not the whole session's work.
-                    with s.begin_nested():
-                        participant = Participant(organization_id=org_id, name=proposed.name)
-                        s.add(participant)
-                except IntegrityError:
-                    participant = (s.query(Participant)
-                                    .filter_by(organization_id=org_id, name=proposed.name)
-                                    .one())
+            participant_id = resolve_participant(s, org_id, proposed.name)
+            if participant_id is None:
+                continue
             s.add(Attribution(cluster_id=cluster.id,
-                              participant_id=participant.id,
+                              participant_id=participant_id,
                               provenance="inferred"))
