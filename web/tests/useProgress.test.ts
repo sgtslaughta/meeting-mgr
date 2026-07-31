@@ -32,6 +32,15 @@ describe("useProgress", () => {
     expect(FakeEventSource.last.closed).toBe(true);
   });
 
+  it("closes the stream on a live failed-stage event, not only on publish", async () => {
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const { result } = renderHook(() => useProgress(7));
+    act(() => FakeEventSource.last.emit({ stage: "transcribe", state: "failed" }));
+    await waitFor(() => expect(result.current.status).toBe("failed"));
+    expect(result.current.failedStage).toBe("transcribe");
+    expect(FakeEventSource.last.closed).toBe(true);
+  });
+
   it("closes the EventSource on unmount even if the pipeline has not finished", () => {
     vi.stubGlobal("EventSource", FakeEventSource);
     const { unmount } = renderHook(() => useProgress(7));

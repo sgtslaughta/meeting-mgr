@@ -28,9 +28,11 @@ export function useProgress(meetingId: number): Progress {
         currentStage: data.stage,
         failedStage: data.state === "failed" ? data.stage : prev.failedStage,
         status: data.stage === "publish" && data.state === "finished"
-          ? "published" : prev.status,
+          ? "published" : data.state === "failed"
+          ? "failed" : prev.status,
       }));
-      if (data.stage === "publish" && data.state === "finished") source.close();
+      if ((data.stage === "publish" && data.state === "finished") ||
+          data.state === "failed") source.close();
     };
     return () => source.close();
   }, [meetingId]);
