@@ -1,0 +1,54 @@
+import subprocess
+from fastapi.testclient import TestClient
+from meeting_mgr.api.main import app
+from meeting_mgr.db import get_readonly_session
+from meeting_mgr.models import Segment
+from meeting_mgr.pipeline import orchestrate as orch
+from meeting_mgr.pipeline import attribute as attr_mod
+from meeting_mgr.pipeline import extract as ex
+from meeting_mgr.pipeline import diarize as di
+from meeting_mgr.pipeline import transcribe as tr
+
+def test_upload_to_published_record(tmp_path, monkeypatch):
+    src = tmp_path / "tone.wav"
+    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+                    str(src)], check=True, capture_output=True)
+
+    monkeypatch.setattr(di, "_call_diarizer", lambda fileobj: {"clusters": [
+        {"label": "SPEAKER_00", "embedding": [0.1], "spans": [{"start": 0.0, "end": 2.0}]}]})
+    monkeypatch.setattr(tr, "transcribe_audio",
+                        lambda audio: [{"start": 0.0, "end": 2.0,
+                                        "text": "Sarah will ship the migration"}])
+    monkeypatch.setattr(attr_mod, "structured_chat",
+        lambda p, schema, **kw: schema.model_validate(
+            {"names": [{"label": "SPEAKER_00", "name": "Sarah"}]}))
+
+    def fake_extract(prompt, schema, **kw):
+        name = schema.__name__
+        with get_readonly_session() as s:
+            seg_id = s.query(Segment).order_by(Segment.id.desc()).first().id
+        return schema.model_validate({
+            "TopicsOut": {"topics": [{"title": "migration", "citations": [seg_id]}]},
+            "MinutesOut": {"minutes": [{"text": "Sarah committed", "citations": [seg_id]}]},
+            "ActionItemsOut": {"action_items": [{"text": "ship the migration",
+                                                 "participant_name": "Sarah",
+                                                 "citations": [seg_id]}]},
+            "DecisionPointsOut": {"decision_points": [{"text": "ship now", "settled": True,
+                                                       "citations": [seg_id]}]},
+        }[name])
+    monkeypatch.setattr(ex, "structured_chat", fake_extract)
+
+    c = TestClient(app)
+    monkeypatch.setattr("meeting_mgr.api.meetings.run_pipeline", orch.run_pipeline)
+    r = c.post("/meetings", data={"title": "standup"},
+               files={"file": ("tone.wav", src.read_bytes(), "audio/wav")})
+    mid = r.json()["meeting_id"]
+
+    body = c.get(f"/meetings/{mid}").json()
+    assert body["status"] == "published"
+    assert body["segments"][0]["text"] == "Sarah will ship the migration"
+    seg_id = body["segments"][0]["id"]
+    assert body["action_items"][0]["citations"] == [seg_id]
+    assert body["action_items"][0]["provenance"] == "inferred"
+    assert body["key_topics"][0]["title"] == "migration"
+    assert body["decision_points"][0]["settled"] is True
