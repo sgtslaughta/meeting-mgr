@@ -1,26 +1,45 @@
 import re
 import subprocess
+
 from fastapi.testclient import TestClient
+
 from meeting_mgr.api.main import app
-from meeting_mgr.pipeline import orchestrate as orch
 from meeting_mgr.pipeline import attribute as attr_mod
-from meeting_mgr.pipeline import extract as ex
 from meeting_mgr.pipeline import diarize as di
+from meeting_mgr.pipeline import extract as ex
+from meeting_mgr.pipeline import orchestrate as orch
 from meeting_mgr.pipeline import transcribe as tr
+
 
 def test_upload_to_published_record(tmp_path, monkeypatch):
     src = tmp_path / "tone.wav"
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
-                    str(src)], check=True, capture_output=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=2", str(src)],
+        check=True,
+        capture_output=True,
+    )
 
-    monkeypatch.setattr(di, "_call_diarizer", lambda fileobj: {"clusters": [
-        {"label": "SPEAKER_00", "embedding": [0.1], "spans": [{"start": 0.0, "end": 2.0}]}]})
-    monkeypatch.setattr(tr, "transcribe_audio",
-                        lambda audio: [{"start": 0.0, "end": 2.0,
-                                        "text": "Sarah will ship the migration"}])
-    monkeypatch.setattr(attr_mod, "structured_chat",
+    monkeypatch.setattr(
+        di,
+        "_call_diarizer",
+        lambda fileobj: {
+            "clusters": [
+                {"label": "SPEAKER_00", "embedding": [0.1], "spans": [{"start": 0.0, "end": 2.0}]}
+            ]
+        },
+    )
+    monkeypatch.setattr(
+        tr,
+        "transcribe_audio",
+        lambda audio: [{"start": 0.0, "end": 2.0, "text": "Sarah will ship the migration"}],
+    )
+    monkeypatch.setattr(
+        attr_mod,
+        "structured_chat",
         lambda p, schema, **kw: schema.model_validate(
-            {"names": [{"label": "SPEAKER_00", "name": "Sarah"}]}))
+            {"names": [{"label": "SPEAKER_00", "name": "Sarah"}]}
+        ),
+    )
 
     def fake_extract(prompt, schema, **kw):
         name = schema.__name__
@@ -29,21 +48,36 @@ def test_upload_to_published_record(tmp_path, monkeypatch):
         m = re.search(r"\[(\d+)\]\[", prompt)
         assert m, "prompt must contain a cited transcript line"
         seg_id = int(m.group(1))
-        return schema.model_validate({
-            "TopicsOut": {"topics": [{"title": "migration", "citations": [seg_id]}]},
-            "MinutesOut": {"minutes": [{"text": "Sarah committed", "citations": [seg_id]}]},
-            "ActionItemsOut": {"action_items": [{"text": "ship the migration",
-                                                 "participant_name": "Sarah",
-                                                 "citations": [seg_id]}]},
-            "DecisionPointsOut": {"decision_points": [{"text": "ship now", "settled": True,
-                                                       "citations": [seg_id]}]},
-        }[name])
+        return schema.model_validate(
+            {
+                "TopicsOut": {"topics": [{"title": "migration", "citations": [seg_id]}]},
+                "MinutesOut": {"minutes": [{"text": "Sarah committed", "citations": [seg_id]}]},
+                "ActionItemsOut": {
+                    "action_items": [
+                        {
+                            "text": "ship the migration",
+                            "participant_name": "Sarah",
+                            "citations": [seg_id],
+                        }
+                    ]
+                },
+                "DecisionPointsOut": {
+                    "decision_points": [
+                        {"text": "ship now", "settled": True, "citations": [seg_id]}
+                    ]
+                },
+            }[name]
+        )
+
     monkeypatch.setattr(ex, "structured_chat", fake_extract)
 
     c = TestClient(app)
     monkeypatch.setattr("meeting_mgr.api.meetings.run_pipeline", orch.run_pipeline)
-    r = c.post("/meetings", data={"title": "standup"},
-               files={"file": ("tone.wav", src.read_bytes(), "audio/wav")})
+    r = c.post(
+        "/meetings",
+        data={"title": "standup"},
+        files={"file": ("tone.wav", src.read_bytes(), "audio/wav")},
+    )
     mid = r.json()["meeting_id"]
 
     body = c.get(f"/meetings/{mid}").json()

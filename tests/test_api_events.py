@@ -12,6 +12,7 @@ itself hangs forever, before delivering even the first SSE line. A real
 server has no such buffering, so it genuinely proves the endpoint
 streams incrementally.
 """
+
 import json
 import threading
 import time
@@ -29,9 +30,9 @@ from meeting_mgr.progress import publish
 def _meeting(status="processing", stage="transcribe") -> int:
     with get_session() as s:
         org = s.query(Organization).filter_by(name="default").one()
-        m = Meeting(organization_id=org.id, title="t", status=status,
-                    current_stage=stage)
-        s.add(m); s.flush()
+        m = Meeting(organization_id=org.id, title="t", status=status, current_stage=stage)
+        s.add(m)
+        s.flush()
         return m.id
 
 
@@ -62,6 +63,7 @@ def test_stream_opens_with_a_snapshot_of_current_state(live_client):
                 assert snap["current_stage"] == "transcribe"
                 break
 
+
 def test_stream_delivers_published_transitions(live_client):
     mid = _meeting()
     seen = []
@@ -80,6 +82,7 @@ def test_stream_delivers_published_transitions(live_client):
                 if payload.get("state") == "finished":
                     break
     assert {"stage": "align", "state": "started"} in seen
+
 
 def test_stream_closes_on_a_live_failed_stage_not_only_on_reconnect(live_client):
     """A pipeline that dies mid-run must not hold the connection open forever.

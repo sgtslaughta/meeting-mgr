@@ -1,10 +1,15 @@
-import subprocess, tempfile, pathlib
+import pathlib
+import subprocess
+import tempfile
+
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import Meeting, Recording
 from meeting_mgr.storage import get_stream, put_stream
 
+
 class NormalizeError(Exception):
     pass
+
 
 def normalize(meeting_id: int) -> None:
     with get_readonly_session() as s:
@@ -25,8 +30,18 @@ def normalize(meeting_id: int) -> None:
         if proc.returncode != 0 or not dst.exists():
             raise NormalizeError(proc.stderr.decode()[-800:])
         probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(dst)], capture_output=True, text=True,
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "csv=p=0",
+                str(dst),
+            ],
+            capture_output=True,
+            text=True,
         )
         if probe.returncode != 0:
             raise NormalizeError(f"ffprobe failed: {probe.stderr.strip()[-800:]}")
@@ -35,8 +50,7 @@ def normalize(meeting_id: int) -> None:
         except ValueError as e:
             # NormalizeError is this stage's documented failure contract; a raw
             # ValueError would escape every caller that honours it.
-            raise NormalizeError(
-                f"ffprobe reported no usable duration: {probe.stdout!r}") from e
+            raise NormalizeError(f"ffprobe reported no usable duration: {probe.stdout!r}") from e
         with dst.open("rb") as fh:
             put_stream(key, fh)
     with get_session() as s:

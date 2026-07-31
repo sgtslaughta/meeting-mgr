@@ -1,9 +1,11 @@
 import pathlib
 import tempfile
+
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.inference.asr import transcribe_audio
 from meeting_mgr.models import Recording, Segment
 from meeting_mgr.storage import get_stream
+
 
 def transcribe(meeting_id: int) -> None:
     with get_readonly_session() as s:
@@ -16,8 +18,12 @@ def transcribe(meeting_id: int) -> None:
             segments = transcribe_audio(fh)
     with get_session() as s:
         for seg in segments:
-            s.add(Segment(
-                meeting_id=meeting_id, cluster_id=None,
-                start_seconds=float(seg["start"]), end_seconds=float(seg["end"]),
-                text=seg["text"].strip(),
-            ))
+            s.add(
+                Segment(
+                    meeting_id=meeting_id,
+                    cluster_id=None,
+                    start_seconds=float(seg["start"]),
+                    end_seconds=float(seg["end"]),
+                    text=seg["text"].strip(),
+                )
+            )

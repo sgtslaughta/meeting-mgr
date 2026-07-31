@@ -1,13 +1,20 @@
-import pytest, subprocess
+import subprocess
+
+import pytest
+
 from meeting_mgr.db import get_session
 from meeting_mgr.models import Recording
-from meeting_mgr.pipeline.normalize import normalize, NormalizeError
+from meeting_mgr.pipeline.normalize import NormalizeError, normalize
 from meeting_mgr.storage import get_object
+
 
 def test_normalize_produces_16k_mono_wav(tmp_path, make_meeting):
     src = tmp_path / "tone.wav"
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
-                    str(src)], check=True, capture_output=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(src)],
+        check=True,
+        capture_output=True,
+    )
     mid = make_meeting(src.read_bytes())
     normalize(mid)
     out = get_object(f"normalized/{mid}.wav")
@@ -17,10 +24,12 @@ def test_normalize_produces_16k_mono_wav(tmp_path, make_meeting):
         assert rec.normalized_key == f"normalized/{mid}.wav"
         assert 0.9 < rec.duration_seconds < 1.1
 
+
 def test_normalize_rejects_corrupt_input(make_meeting):
     mid = make_meeting(b"not audio at all", name="bad.wav")
     with pytest.raises(NormalizeError):
         normalize(mid)
+
 
 def test_normalize_streams_both_ways(monkeypatch, tmp_path, make_meeting):
     from meeting_mgr.pipeline import normalize as mod
@@ -45,9 +54,11 @@ def test_normalize_streams_both_ways(monkeypatch, tmp_path, make_meeting):
     monkeypatch.setattr(mod, "put_stream", spy_put)
 
     src = tmp_path / "tone.wav"
-    subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i",
-                    "sine=frequency=440:duration=1", str(src)],
-                   check=True, capture_output=True)
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(src)],
+        check=True,
+        capture_output=True,
+    )
     mid = make_meeting(src.read_bytes())
     normalize(mid)
 
@@ -56,22 +67,28 @@ def test_normalize_streams_both_ways(monkeypatch, tmp_path, make_meeting):
 
 
 def test_normalize_raises_normalize_error_on_bad_ffprobe_output(
-        monkeypatch, tmp_path, make_meeting):
+    monkeypatch, tmp_path, make_meeting
+):
     import subprocess as sp
+
     from meeting_mgr.pipeline import normalize as mod
 
     src = tmp_path / "tone.wav"
-    sp.run(["ffmpeg", "-y", "-f", "lavfi", "-i",
-            "sine=frequency=440:duration=1", str(src)],
-           check=True, capture_output=True)
+    sp.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(src)],
+        check=True,
+        capture_output=True,
+    )
     mid = make_meeting(src.read_bytes())
 
     real_run = mod.subprocess.run
+
     def fake_run(cmd, *a, **kw):
         result = real_run(cmd, *a, **kw)
         if cmd[0] == "ffprobe":
-            result.stdout = "N/A\n"      # ffprobe's real output for unknown duration
+            result.stdout = "N/A\n"  # ffprobe's real output for unknown duration
         return result
+
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
 
     with pytest.raises(NormalizeError):

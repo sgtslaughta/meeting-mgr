@@ -1,11 +1,13 @@
-import json
 import threading
 import time
+
 from meeting_mgr.progress import channel, publish, subscribe
+
 
 def test_channel_is_scoped_per_meeting():
     assert channel(7) == "meeting:7:progress"
     assert channel(8) != channel(7)
+
 
 def test_published_events_reach_a_subscriber():
     received = []
@@ -30,9 +32,12 @@ def test_published_events_reach_a_subscriber():
     assert {"stage": "transcribe", "state": "started"} in received
     assert {"stage": "transcribe", "state": "finished"} in received
 
+
 def test_publish_never_raises_when_redis_is_unreachable(monkeypatch):
     import meeting_mgr.progress as mod
+
     def boom():
         raise ConnectionError("redis is down")
+
     monkeypatch.setattr(mod, "_redis", boom)
-    publish(1, "normalize", "started")   # must not raise
+    publish(1, "normalize", "started")  # must not raise

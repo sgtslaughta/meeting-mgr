@@ -1,5 +1,7 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings
+
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:test@localhost:55432/meeting_mgr_test"
@@ -15,6 +17,7 @@ class Settings(BaseSettings):
     llm_api_key: str = "unused"
     llm_model: str = "local-model"
     diarizer_url: str = "http://localhost:58081"
+
 
 @lru_cache
 def get_settings() -> Settings:

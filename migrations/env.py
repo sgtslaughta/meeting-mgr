@@ -1,13 +1,11 @@
 from logging.config import fileConfig
 
-from sqlalchemy import engine_from_config
-from sqlalchemy import pool
-
 from alembic import context
+from sqlalchemy import engine_from_config, pool
 
+import meeting_mgr.models  # noqa: F401  (registers all mapped classes on Base.metadata)
 from meeting_mgr.config import get_settings
 from meeting_mgr.db import Base
-import meeting_mgr.models  # noqa: F401  (registers all mapped classes on Base.metadata)
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -66,9 +64,7 @@ def run_migrations_online() -> None:
     )
 
     with connectable.connect() as connection:
-        context.configure(
-            connection=connection, target_metadata=target_metadata
-        )
+        context.configure(connection=connection, target_metadata=target_metadata)
 
         with context.begin_transaction():
             context.run_migrations()

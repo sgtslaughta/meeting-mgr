@@ -1,15 +1,19 @@
 from pydantic import BaseModel
+
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.inference.llm import structured_chat
 from meeting_mgr.models import Attribution, Meeting, Segment, SpeakerCluster
 from meeting_mgr.participants import resolve_participant
 
+
 class ClusterName(BaseModel):
     label: str
     name: str | None = None
 
+
 class AttributionProposal(BaseModel):
     names: list[ClusterName]
+
 
 PROMPT = """Below is a meeting transcript with anonymous speaker labels.
 Using only in-transcript cues (people addressing each other by name,
@@ -21,25 +25,27 @@ Return JSON: {{"names": [{{"label": "SPEAKER_00", "name": "Sarah"}}]}}
 TRANSCRIPT:
 {transcript}"""
 
+
 def render_transcript(meeting_id: int) -> str:
     with get_readonly_session() as s:
         rows = (
             s.query(Segment, SpeakerCluster)
             .outerjoin(SpeakerCluster, Segment.cluster_id == SpeakerCluster.id)
             .filter(Segment.meeting_id == meeting_id)
-            .order_by(Segment.start_seconds).all()
+            .order_by(Segment.start_seconds)
+            .all()
         )
-        return "\n".join(
-            f"[{c.label if c else 'UNKNOWN'}] {seg.text}" for seg, c in rows
-        )
+        return "\n".join(f"[{c.label if c else 'UNKNOWN'}] {seg.text}" for seg, c in rows)
+
 
 def attribute(meeting_id: int) -> None:
     transcript = render_transcript(meeting_id)
     proposal = structured_chat(PROMPT.format(transcript=transcript), AttributionProposal)
     with get_session() as s:
         org_id = s.get(Meeting, meeting_id).organization_id
-        by_label = {c.label: c for c in
-                    s.query(SpeakerCluster).filter_by(meeting_id=meeting_id).all()}
+        by_label = {
+            c.label: c for c in s.query(SpeakerCluster).filter_by(meeting_id=meeting_id).all()
+        }
         for proposed in proposal.names:
             cluster = by_label.get(proposed.label)
             if cluster is None or not proposed.name:
@@ -47,6 +53,8 @@ def attribute(meeting_id: int) -> None:
             participant_id = resolve_participant(s, org_id, proposed.name)
             if participant_id is None:
                 continue
-            s.add(Attribution(cluster_id=cluster.id,
-                              participant_id=participant_id,
-                              provenance="inferred"))
+            s.add(
+                Attribution(
+                    cluster_id=cluster.id, participant_id=participant_id, provenance="inferred"
+                )
+            )

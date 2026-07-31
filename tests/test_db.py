@@ -1,9 +1,12 @@
 from sqlalchemy import text
-from meeting_mgr.db import get_session, get_readonly_session
+
+from meeting_mgr.db import get_readonly_session, get_session
+
 
 def test_session_connects():
     with get_session() as s:
         assert s.execute(text("select 1")).scalar() == 1
+
 
 def test_readonly_session_discards_writes():
     # Drop the probe table afterwards: a committed table with no model makes
