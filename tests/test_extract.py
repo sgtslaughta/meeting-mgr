@@ -1,5 +1,6 @@
 from meeting_mgr.db import get_session
-from meeting_mgr.models import ActionItem, KeyTopic, Segment, SpeakerCluster
+from meeting_mgr.models import (ActionItem, DecisionPoint, KeyTopic, Minute,
+                                Participant, Segment, SpeakerCluster)
 from meeting_mgr.pipeline import extract as ex
 
 def _seed(mid) -> int:
@@ -38,3 +39,58 @@ def test_extract_action_items_links_participant(monkeypatch, make_meeting):
         item = s.query(ActionItem).filter_by(meeting_id=mid).one()
         assert item.participant_id is not None
         assert item.citations == [sid]
+
+def test_extract_drops_items_whose_citations_are_all_invalid(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); _seed(mid)
+    monkeypatch.setattr(ex, "structured_chat",
+        lambda prompt, schema, **kw: schema.model_validate(
+            {"topics": [{"title": "real", "citations": [999999]}]}))
+    ex.extract_key_topics(mid)
+    with get_session() as s:
+        assert s.query(KeyTopic).filter_by(meeting_id=mid).count() == 0
+
+
+def test_extract_keeps_only_the_valid_citations(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); sid = _seed(mid)
+    monkeypatch.setattr(ex, "structured_chat",
+        lambda prompt, schema, **kw: schema.model_validate(
+            {"topics": [{"title": "mixed", "citations": [sid, 999999]}]}))
+    ex.extract_key_topics(mid)
+    with get_session() as s:
+        assert s.query(KeyTopic).filter_by(meeting_id=mid).one().citations == [sid]
+
+
+def test_extract_minutes_stores_citations(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); sid = _seed(mid)
+    monkeypatch.setattr(ex, "structured_chat",
+        lambda prompt, schema, **kw: schema.model_validate(
+            {"minutes": [{"text": "Sarah committed", "citations": [sid]}]}))
+    ex.extract_minutes(mid)
+    with get_session() as s:
+        m = s.query(Minute).filter_by(meeting_id=mid).one()
+        assert m.text == "Sarah committed"
+        assert m.citations == [sid]
+        assert m.provenance == "inferred"
+
+
+def test_extract_decision_points_records_positions(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); sid = _seed(mid)
+    monkeypatch.setattr(ex, "structured_chat",
+        lambda prompt, schema, **kw: schema.model_validate(
+            {"decision_points": [{
+                "text": "ship now or wait",
+                "settled": False,
+                "positions": [{"participant_name": "Sarah", "position": "ship now"},
+                              {"participant_name": "Raj", "position": "wait"}],
+                "citations": [sid]}]}))
+    ex.extract_decision_points(mid)
+    with get_session() as s:
+        d = s.query(DecisionPoint).filter_by(meeting_id=mid).one()
+        assert d.settled is False
+        assert d.citations == [sid]
+        assert len(d.positions) == 2
+        names = {
+            s.get(Participant, pos["participant_id"]).name: pos["position"]
+            for pos in d.positions
+        }
+        assert names == {"Sarah": "ship now", "Raj": "wait"}
