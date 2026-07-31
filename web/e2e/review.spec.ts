@@ -29,4 +29,13 @@ test("upload, watch progress, confirm a speaker", async ({ page }) => {
 
   await expect(page.locator("[data-provenance='confirmed']").first())
     .toBeVisible();
+
+  // The badge above is backed by a fresh getMeeting() today, so it already
+  // proves the server-side state -- but only as long as nothing adds
+  // optimistic client updates. Assert on the API's own JSON directly so a
+  // future optimistic-UI refactor can't silently defeat this test.
+  const meetingId = page.url().match(/\/meetings\/(\d+)/)?.[1];
+  const body = await (await page.request.get(`/meetings/${meetingId}`)).json();
+  expect(body.attributions.some(
+    (a: { provenance: string }) => a.provenance === "confirmed")).toBe(true);
 });
