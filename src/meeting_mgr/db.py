@@ -11,6 +11,7 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 @contextmanager
 def get_session():
+    """Read-write session. Commits on clean exit, rolls back on exception."""
     s = SessionLocal()
     try:
         yield s
@@ -19,4 +20,14 @@ def get_session():
         s.rollback()
         raise
     finally:
+        s.close()
+
+@contextmanager
+def get_readonly_session():
+    """Read-only session. Always rolls back, so a stray write cannot commit."""
+    s = SessionLocal()
+    try:
+        yield s
+    finally:
+        s.rollback()
         s.close()
