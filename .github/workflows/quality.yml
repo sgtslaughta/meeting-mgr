@@ -31,23 +31,31 @@ jobs:
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
-      minio:
-        image: minio/minio
-        env:
-          MINIO_ROOT_USER: test
-          MINIO_ROOT_PASSWORD: testtest
-        ports: ["59000:9000"]
-        # minio's entrypoint needs an explicit command to serve; GH Actions
-        # `services:` containers can't override CMD, so a health check that
-        # just probes the HTTP port is used instead of `minio server /data`
-        # (that command is baked into the image's default entrypoint args).
-        options: >-
-          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
+      # minio is deliberately NOT a service container. Its image CMD is
+      # ["minio"] with no subcommand, and `services:` cannot override CMD --
+      # the container prints usage and exits immediately, so the health check
+      # never passes. Verified by running the bare image: it exits at once.
+      # It is started as a step below with the `server /data` command instead.
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start minio
+        run: |
+          docker run -d --name minio \
+            -p 59000:9000 \
+            -e MINIO_ROOT_USER=test \
+            -e MINIO_ROOT_PASSWORD=testtest \
+            --health-cmd "mc ready local || exit 1" \
+            --health-interval 5s --health-timeout 5s --health-retries 20 \
+            minio/minio server /data
+          # Wait for it to actually accept connections rather than assuming.
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:59000/minio/health/live; then
+              echo "minio ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "minio failed to become ready"; docker logs minio; exit 1
 
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
