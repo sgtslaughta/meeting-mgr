@@ -43,6 +43,17 @@ def create_meeting(title: str = Form(...), file: UploadFile = File(...)):
     run_pipeline(meeting_id)
     return {"meeting_id": meeting_id, "status": "pending"}
 
+@router.get("/meetings")
+def list_meetings():
+    with get_readonly_session() as s:
+        rows = s.query(Meeting).order_by(Meeting.id.desc()).all()
+        return [
+            {"id": m.id, "title": m.title, "status": m.status,
+             "current_stage": m.current_stage, "failed_stage": m.failed_stage,
+             "created_at": m.created_at}
+            for m in rows
+        ]
+
 @router.get("/meetings/{meeting_id}")
 def read_meeting(meeting_id: int):
     with get_readonly_session() as s:
