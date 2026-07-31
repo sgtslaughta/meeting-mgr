@@ -111,6 +111,7 @@ override them again with real secrets for any real deployment.
 | `LLM_API_KEY` | `unused` | API key sent to the LLM endpoint |
 | `LLM_MODEL` | `local-model` | Model name sent in LLM requests |
 | `DIARIZER_URL` | `http://localhost:58081` | Base URL of the diarizer service (no `/diarize` suffix) |
+| `SESSION_SECRET` | `INSECURE-DEV-SESSION-SECRET-DO-NOT-USE-IN-PRODUCTION` | Signs the session cookie (`itsdangerous`, via Starlette's `SessionMiddleware`). **You must override this in any real deployment** — anyone who knows the default can forge a session cookie and log in as any Account. Set it to a long random value (e.g. `openssl rand -hex 32`) and keep it secret; rotating it invalidates all existing sessions. |
 
 `HF_TOKEN` is **not** one of these — it belongs to the separate `diarizer`
 container/process, not the API/worker `Settings` class. See below.

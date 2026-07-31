@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     llm_api_key: str = "unused"
     llm_model: str = "local-model"
     diarizer_url: str = "http://localhost:58081"
+    # Signs the session cookie. This default is a deliberately unsafe
+    # placeholder — production deployments MUST override it (see admin guide).
+    session_secret: str = "INSECURE-DEV-SESSION-SECRET-DO-NOT-USE-IN-PRODUCTION"
 
 
 @lru_cache
