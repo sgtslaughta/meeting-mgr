@@ -1,8 +1,11 @@
+import json
+
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import (Meeting, Organization, Recording, Segment,
                                 KeyTopic, Minute, ActionItem, DecisionPoint)
+from meeting_mgr.progress import subscribe
 from meeting_mgr.storage import (RangeNotSatisfiable, ensure_bucket,
                                  open_object, put_stream)
 
@@ -75,6 +78,31 @@ def read_meeting(meeting_id: int):
             "minutes": rows(Minute), "action_items": rows(ActionItem),
             "decision_points": rows(DecisionPoint),
         }
+
+@router.get("/meetings/{meeting_id}/events")
+def stream_events(meeting_id: int):
+    with get_readonly_session() as s:
+        m = s.get(Meeting, meeting_id)
+        if m is None:
+            raise HTTPException(404, "meeting not found")
+        snapshot = {"status": m.status, "current_stage": m.current_stage,
+                    "failed_stage": m.failed_stage}
+
+    def events():
+        # A client that connects mid-run, or reloads, missed every prior
+        # event — Redis pub/sub has no backlog. The snapshot is what makes
+        # reconnect and refresh work.
+        yield f"data: {json.dumps(snapshot)}\n\n"
+        if snapshot["status"] in ("published", "failed"):
+            return
+        for event in subscribe(meeting_id):
+            yield f"data: {json.dumps(event)}\n\n"
+            if event.get("stage") == "publish" and event.get("state") == "finished":
+                return
+
+    return StreamingResponse(events(), media_type="text/event-stream",
+                             headers={"cache-control": "no-cache",
+                                      "x-accel-buffering": "no"})
 
 def _valid_range(header: str | None) -> str | None:
     """Pass through only the forms browsers send for media seeking.
