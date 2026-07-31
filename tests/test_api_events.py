@@ -80,3 +80,25 @@ def test_stream_delivers_published_transitions(live_client):
                 if payload.get("state") == "finished":
                     break
     assert {"stage": "align", "state": "started"} in seen
+
+def test_stream_closes_on_a_live_failed_stage_not_only_on_reconnect(live_client):
+    """A pipeline that dies mid-run must not hold the connection open forever.
+
+    Unlike test_stream_delivers_published_transitions, this loop does NOT
+    break on seeing the failed event — it lets iter_lines() run to natural
+    exhaustion. If the server generator did not return on a live failed
+    event, this test would hang until the client's 10s timeout and fail.
+    """
+    mid = _meeting()
+
+    def fail_soon():
+        time.sleep(0.5)
+        publish(mid, "transcribe", "failed")
+
+    threading.Thread(target=fail_soon, daemon=True).start()
+    seen = []
+    with live_client.stream("GET", f"/meetings/{mid}/events") as r:
+        for line in r.iter_lines():
+            if line.startswith("data:"):
+                seen.append(json.loads(line.removeprefix("data:").strip()))
+    assert {"stage": "transcribe", "state": "failed"} in seen

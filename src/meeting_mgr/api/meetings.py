@@ -97,7 +97,9 @@ def stream_events(meeting_id: int):
             return
         for event in subscribe(meeting_id):
             yield f"data: {json.dumps(event)}\n\n"
-            if event.get("stage") == "publish" and event.get("state") == "finished":
+            finished_publish = (event.get("stage") == "publish" and
+                                event.get("state") == "finished")
+            if finished_publish or event.get("state") == "failed":
                 return
 
     return StreamingResponse(events(), media_type="text/event-stream",
