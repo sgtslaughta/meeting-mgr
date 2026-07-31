@@ -24,4 +24,17 @@ describe("MeetingList", () => {
       screen.getByRole("link", { name: /standup/ })).toHaveAttribute(
         "href", "/meetings/42"));
   });
+
+  it("does not show the stage for a published meeting even if one is set", async () => {
+    // A published meeting can still carry a stale non-null current_stage
+    // from before it finished. The list must show plain status, not stage,
+    // once processing is done — otherwise the "processing" guard is dead.
+    vi.spyOn(api, "listMeetings").mockResolvedValue([
+      { id: 7, title: "retro", status: "published",
+        current_stage: "transcribe", failed_stage: null, created_at: "" },
+    ]);
+    render(<MemoryRouter><MeetingList /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText("published")).toBeInTheDocument());
+    expect(screen.queryByText(/transcribe/)).not.toBeInTheDocument();
+  });
 });
