@@ -94,3 +94,37 @@ def test_extract_decision_points_records_positions(monkeypatch, make_meeting):
             for pos in d.positions
         }
         assert names == {"Sarah": "ship now", "Raj": "wait"}
+
+
+def test_decision_point_drops_positions_with_no_named_holder(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); sid = _seed(mid)
+    monkeypatch.setattr(ex, "structured_chat",
+        lambda prompt, schema, **kw: schema.model_validate(
+            {"decision_points": [{
+                "text": "ship now or wait",
+                "settled": False,
+                "positions": [{"participant_name": "Sarah", "position": "ship now"},
+                              {"participant_name": "", "position": "wait"},
+                              {"participant_name": "   ", "position": "abstain"}],
+                "citations": [sid]}]}))
+    ex.extract_decision_points(mid)
+    with get_session() as s:
+        d = s.query(DecisionPoint).filter_by(meeting_id=mid).one()
+        assert len(d.positions) == 1, "blank-named positions must be dropped"
+        assert s.get(Participant, d.positions[0]["participant_id"]).name == "Sarah"
+
+
+def test_no_participant_is_created_for_a_blank_name(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake"); sid = _seed(mid)
+    with get_session() as s:
+        before = s.query(Participant).count()
+    monkeypatch.setattr(ex, "structured_chat",
+        lambda prompt, schema, **kw: schema.model_validate(
+            {"decision_points": [{
+                "text": "unresolved", "settled": False,
+                "positions": [{"participant_name": "", "position": "wait"}],
+                "citations": [sid]}]}))
+    ex.extract_decision_points(mid)
+    with get_session() as s:
+        assert s.query(Participant).count() == before, \
+            "a blank participant_name must not create a Participant row"

@@ -69,8 +69,13 @@ def _valid_segment_ids(meeting_id: int) -> set[int]:
 def _cited(citations: list[int], valid: set[int]) -> list[int]:
     return [c for c in citations if c in valid]
 
-def _resolve_participant(s, org_id: int, name: str) -> int:
-    p = s.query(Participant).filter_by(organization_id=org_id, name=name).one_or_none()
+def _resolve_participant(s, org_id: int, name: str | None) -> int | None:
+    """Same (organization_id, name) rule the attribution stage uses, so a name
+    resolves to one Participant however it was discovered."""
+    if not name or not name.strip():
+        return None
+    p = (s.query(Participant)
+          .filter_by(organization_id=org_id, name=name).one_or_none())
     if p is None:
         p = Participant(organization_id=org_id, name=name)
         s.add(p); s.flush()
@@ -139,11 +144,12 @@ def extract_decision_points(meeting_id: int) -> None:
             citations = _cited(d.citations, valid)
             if not citations:
                 continue
-            positions = [
-                {"participant_id": _resolve_participant(s, org_id, p.participant_name),
-                 "position": p.position}
-                for p in d.positions
-            ]
+            positions = []
+            for pos in d.positions:
+                pid = _resolve_participant(s, org_id, pos.participant_name)
+                if pid is None:
+                    continue   # a position with no identifiable holder is not a position
+                positions.append({"participant_id": pid, "position": pos.position})
             s.add(DecisionPoint(meeting_id=meeting_id, text=d.text,
                                 settled=d.settled, positions=positions,
                                 citations=citations, provenance="inferred"))
