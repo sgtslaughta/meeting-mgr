@@ -6,10 +6,16 @@ def test_session_connects():
         assert s.execute(text("select 1")).scalar() == 1
 
 def test_readonly_session_discards_writes():
-    with get_session() as s:
-        s.execute(text("create table if not exists probe (id int)"))
-        s.execute(text("delete from probe"))
-    with get_readonly_session() as s:
-        s.execute(text("insert into probe values (1)"))
-    with get_session() as s:
-        assert s.execute(text("select count(*) from probe")).scalar() == 0
+    # Drop the probe table afterwards: a committed table with no model makes
+    # every later `alembic revision --autogenerate` propose dropping it.
+    try:
+        with get_session() as s:
+            s.execute(text("create table if not exists probe (id int)"))
+            s.execute(text("delete from probe"))
+        with get_readonly_session() as s:
+            s.execute(text("insert into probe values (1)"))
+        with get_session() as s:
+            assert s.execute(text("select count(*) from probe")).scalar() == 0
+    finally:
+        with get_session() as s:
+            s.execute(text("drop table if exists probe"))
