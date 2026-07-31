@@ -12,7 +12,13 @@ class _AsrSegment(BaseModel):
 class _AsrResponse(BaseModel):
     segments: list[_AsrSegment]
 
-def transcribe_audio(audio: bytes, base_url: str | None = None) -> list[dict]:
+def transcribe_audio(audio, base_url: str | None = None) -> list[dict]:
+    """Send audio to the ASR endpoint and return its segments.
+
+    `audio` may be raw bytes or an open file-like object; httpx streams
+    either directly into the multipart body, so callers with large files
+    can pass an open handle instead of buffering the whole recording.
+    """
     s = get_settings()
     url = f"{base_url or s.asr_base_url}/audio/transcriptions"
     last = None
