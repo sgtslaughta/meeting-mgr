@@ -3,6 +3,10 @@ services:
     image: postgres:17
     environment: { POSTGRES_PASSWORD: meeting, POSTGRES_DB: meeting_mgr }
     volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      retries: 20
   redis:
     image: redis:7
     command: ["redis-server", "--appendonly", "yes"]   # durability: jobs are hours of GPU work
@@ -13,20 +17,50 @@ services:
     environment: { MINIO_ROOT_USER: meeting, MINIO_ROOT_PASSWORD: meetingmeeting }
     volumes: ["miniodata:/data"]
     ports: ["9000:9000", "9001:9001"]
+
+  # One-shot. api and worker wait for it to exit 0, so a fresh stack never
+  # serves against an empty schema, and two replicas cannot race two migrations.
+  migrate:
+    build: .
+    command: alembic upgrade head
+    environment: &app_env
+      DATABASE_URL: postgresql+psycopg://postgres:meeting@postgres:5432/meeting_mgr
+      REDIS_URL: redis://redis:6379/0
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: meeting
+      S3_SECRET_KEY: meetingmeeting
+      S3_BUCKET: recordings
+      DIARIZER_URL: http://diarizer:8081
+      ASR_BASE_URL: "${ASR_BASE_URL:-http://host.docker.internal:8080/v1}"
+      ASR_API_KEY: "${ASR_API_KEY:-unused}"
+      ASR_MODEL: "${ASR_MODEL:-whisper-1}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:8080/v1}"
+      LLM_API_KEY: "${LLM_API_KEY:-unused}"
+      LLM_MODEL: "${LLM_MODEL:-local-model}"
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: "no"
+
   api:
     build: .
     command: uvicorn meeting_mgr.api.main:app --host 0.0.0.0 --port 8000
-    env_file: [.env]
+    environment: *app_env
     ports: ["8000:8000"]
-    depends_on: [postgres, redis, minio]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
   worker:
     build: .
     command: celery -A meeting_mgr.pipeline.app worker -l info
-    env_file: [.env]
-    depends_on: [postgres, redis, minio]
+    environment: *app_env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+      minio: { condition: service_started }
   diarizer:
     build: ./services/diarizer
-    environment: { HF_TOKEN: "${HF_TOKEN}" }
+    environment: { HF_TOKEN: "${HF_TOKEN:?HF_TOKEN is required for pyannote}" }
     ports: ["8081:8081"]
     deploy:
       resources:
