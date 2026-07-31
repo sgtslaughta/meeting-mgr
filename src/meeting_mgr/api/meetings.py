@@ -3,7 +3,8 @@ import json
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 from meeting_mgr.db import get_readonly_session, get_session
-from meeting_mgr.models import (Meeting, Organization, Recording, Segment,
+from meeting_mgr.models import (Attribution, Meeting, Organization,
+                                Participant, Recording, Segment, SpeakerCluster,
                                 KeyTopic, Minute, ActionItem, DecisionPoint)
 from meeting_mgr.progress import subscribe
 from meeting_mgr.storage import (RangeNotSatisfiable, ensure_bucket,
@@ -22,6 +23,7 @@ _FIELDS = {
                  "citations", "provenance"),
     DecisionPoint: ("id", "text", "settled", "positions", "citations",
                     "provenance"),
+    SpeakerCluster: ("id", "label", "spans"),
 }
 
 def run_pipeline(meeting_id: int) -> None:
@@ -74,7 +76,15 @@ def read_meeting(meeting_id: int):
         return {
             "id": m.id, "title": m.title, "status": m.status,
             "failed_stage": m.failed_stage,
-            "segments": rows(Segment), "key_topics": rows(KeyTopic),
+            "segments": rows(Segment), "clusters": rows(SpeakerCluster),
+            "attributions": [
+                {"cluster_id": a.cluster_id, "participant_id": a.participant_id,
+                 "participant_name": s.get(Participant, a.participant_id).name,
+                 "provenance": a.provenance}
+                for a in s.query(Attribution).join(SpeakerCluster)
+                          .filter(SpeakerCluster.meeting_id == meeting_id).all()
+            ],
+            "key_topics": rows(KeyTopic),
             "minutes": rows(Minute), "action_items": rows(ActionItem),
             "decision_points": rows(DecisionPoint),
         }
