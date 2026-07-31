@@ -22,20 +22,37 @@ def test_normalize_rejects_corrupt_input(make_meeting):
     with pytest.raises(NormalizeError):
         normalize(mid)
 
-def test_normalize_never_buffers_whole_files(monkeypatch, tmp_path, make_meeting):
+def test_normalize_streams_both_ways(monkeypatch, tmp_path, make_meeting):
     from meeting_mgr.pipeline import normalize as mod
-    def boom(*a, **kw):
-        raise AssertionError("normalize must stream, not buffer whole files")
-    monkeypatch.setattr(mod, "get_stream", mod.get_stream)  # keep the real one
-    monkeypatch.setattr("meeting_mgr.storage.get_object", boom)
-    monkeypatch.setattr("meeting_mgr.storage.put_object", boom)
+
+    # The buffering helpers must not even be bound in this module's namespace.
+    assert not hasattr(mod, "get_object"), "normalize must not import get_object"
+    assert not hasattr(mod, "put_object"), "normalize must not import put_object"
+
+    # And the streaming helpers must actually be the ones exercised.
+    calls = []
+    real_get, real_put = mod.get_stream, mod.put_stream
+
+    def spy_get(key, fileobj):
+        calls.append(("get_stream", key))
+        return real_get(key, fileobj)
+
+    def spy_put(key, fileobj):
+        calls.append(("put_stream", key))
+        return real_put(key, fileobj)
+
+    monkeypatch.setattr(mod, "get_stream", spy_get)
+    monkeypatch.setattr(mod, "put_stream", spy_put)
 
     src = tmp_path / "tone.wav"
     subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i",
                     "sine=frequency=440:duration=1", str(src)],
                    check=True, capture_output=True)
     mid = make_meeting(src.read_bytes())
-    normalize(mid)   # must not touch the buffering helpers
+    normalize(mid)
+
+    assert [name for name, _ in calls] == ["get_stream", "put_stream"]
+    assert calls[1][1] == f"normalized/{mid}.wav"
 
 
 def test_normalize_raises_normalize_error_on_bad_ffprobe_output(
