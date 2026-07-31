@@ -1,7 +1,16 @@
+import time
 import httpx
+from pydantic import BaseModel, ValidationError
 from meeting_mgr.config import get_settings
 from meeting_mgr.inference.llm import InferenceError, MAX_ATTEMPTS
-import time
+
+class _AsrSegment(BaseModel):
+    start: float
+    end: float
+    text: str
+
+class _AsrResponse(BaseModel):
+    segments: list[_AsrSegment]
 
 def transcribe_audio(audio: bytes, base_url: str | None = None) -> list[dict]:
     s = get_settings()
@@ -16,9 +25,13 @@ def transcribe_audio(audio: bytes, base_url: str | None = None) -> list[dict]:
                 data={"model": s.asr_model, "response_format": "verbose_json"},
             )
             r.raise_for_status()
-            return r.json().get("segments", [])
-        except (httpx.HTTPError, ValueError) as e:
+            # Validate the shape rather than defaulting a missing `segments` to
+            # []. A silent meeting returns `segments: []`; a garbled response
+            # has no `segments` at all, and the two must not look the same.
+            data = _AsrResponse.model_validate(r.json())
+            return [seg.model_dump() for seg in data.segments]
+        except (httpx.HTTPError, ValueError, ValidationError) as e:
             last = e
             if attempt < MAX_ATTEMPTS - 1:
                 time.sleep(0.5 * 2 ** attempt)
-    raise InferenceError(f"{url} failed after {MAX_ATTEMPTS} attempts: {last}")
+    raise InferenceError(f"{url} failed after {MAX_ATTEMPTS} attempts: {last}") from last
