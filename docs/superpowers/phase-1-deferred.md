@@ -11,6 +11,12 @@ repeated here.
 Read this before planning Phase 2 or 3 — several items are cheaper to fix
 before the code they touch grows.
 
+**Every finding below is now tracked as a GitHub issue** (#1–#28), and the five
+remaining phases as #29–#33. The issues are the working record; this document is
+the narrative behind them. Triage labels follow `docs/agents/triage-labels.md`:
+`ready-for-agent` where the fix is fully specified, `ready-for-human` where it
+needs a design decision first.
+
 ---
 
 ## Test infrastructure
