@@ -1,12 +1,15 @@
-// Screens land in later tasks (9-13). This scaffold only wires up the
-// typed API client (see src/api.ts, src/types.ts).
-function App() {
+import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { MeetingDetail } from "./routes/MeetingDetail";
+import { MeetingList } from "./routes/MeetingList";
+import "./styles.css";
+
+export default function App() {
   return (
-    <main>
-      <h1>Meeting MGR</h1>
-      <p>Review UI under construction.</p>
-    </main>
+    <BrowserRouter>
+      <Routes>
+        <Route path="/" element={<MeetingList />} />
+        <Route path="/meetings/:id" element={<MeetingDetail />} />
+      </Routes>
+    </BrowserRouter>
   );
 }
-
-export default App;
