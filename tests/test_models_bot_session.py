@@ -1,10 +1,11 @@
 import uuid
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from meeting_mgr.bot_credentials import create_bot_credential
-from meeting_mgr.db import get_session
+from meeting_mgr.db import get_org_session, get_session
 from meeting_mgr.models import Account, BotSession, Meeting, Organization
 
 
@@ -82,3 +83,33 @@ def test_bot_session_is_deleted_when_its_meeting_is_deleted():
         assert s.query(BotSession).filter_by(meeting_id=meeting_id).count() == 0, (
             "ON DELETE CASCADE from meeting did not remove the BotSession row"
         )
+
+
+def test_bot_session_tenant_isolation():
+    org_a, org_b = _org(), _org()
+    account_a, account_b = _account(org_a), _account(org_b)
+    cred_a, meeting_a = _credential_and_meeting(org_a, account_a)
+    cred_b, meeting_b = _credential_and_meeting(org_b, account_b)
+    with get_session() as s:
+        s.add(
+            BotSession(
+                organization_id=org_a,
+                bot_credential_id=cred_a,
+                meeting_id=meeting_a,
+                platform_meeting_id="a",
+            )
+        )
+        s.add(
+            BotSession(
+                organization_id=org_b,
+                bot_credential_id=cred_b,
+                meeting_id=meeting_b,
+                platform_meeting_id="b",
+            )
+        )
+
+    with get_org_session(org_a) as s:
+        rows = s.execute(text("SELECT platform_meeting_id FROM bot_session")).fetchall()
+        platform_ids = {r[0] for r in rows}
+    assert "a" in platform_ids
+    assert "b" not in platform_ids, "RLS did not confine bot_session to its own organization"
