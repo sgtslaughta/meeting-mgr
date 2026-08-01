@@ -24,6 +24,11 @@ class Settings(BaseSettings):
     # Empty (default) means mTLS is not in use: the identity header is always
     # stripped, regardless of source. Public env var name: MTLS_PROXY_ALLOWLIST.
     mtls_proxy_allowlist_raw: str = ""
+    # OIDC relying-party config. Defaults are deliberately invalid
+    # placeholders — production deployments MUST override them.
+    oidc_discovery_url: str = "https://example-idp.invalid/.well-known/openid-configuration"
+    oidc_client_id: str = "unset"
+    oidc_client_secret: str = "unset"
 
     @property
     def mtls_proxy_allowlist(self) -> frozenset[str]:

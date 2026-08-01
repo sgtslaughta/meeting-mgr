@@ -1,12 +1,16 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from meeting_mgr.auth.deps import get_current_account
+from meeting_mgr.auth.oidc import build_oauth
 from meeting_mgr.auth.password import hash_password, verify_password
-from meeting_mgr.db import get_readonly_session
-from meeting_mgr.models import Account
+from meeting_mgr.db import get_readonly_session, get_session
+from meeting_mgr.models import Account, Organization
 
 router = APIRouter(prefix="/auth")
+
+oauth = build_oauth()
 
 # A fixed, valid-format hash with no known plaintext. Used in place of a
 # missing account/password_hash so `verify_password` always does the same
@@ -59,3 +63,36 @@ def logout(request: Request):
 @router.get("/me")
 def me(account: Account = Depends(get_current_account)):
     return _view(account)
+
+
+@router.get("/oidc/login")
+async def oidc_login(request: Request):
+    redirect_uri = str(request.url_for("oidc_callback"))
+    return await oauth.oidc.authorize_redirect(request, redirect_uri)
+
+
+@router.get("/oidc/callback")
+async def oidc_callback(request: Request):
+    # authorize_access_token validates the `state` parameter against the
+    # value authlib stashed in the session during authorize_redirect — this
+    # is the CSRF defence for the authorization-code flow. We rely on
+    # authlib's own validation here rather than checking `state` ourselves.
+    token = await oauth.oidc.authorize_access_token(request)
+    claims = token.get("userinfo") or {}
+    subject, email = claims.get("sub"), claims.get("email")
+    if not subject or not email:
+        raise HTTPException(400, "OIDC provider did not return sub and email claims")
+
+    with get_session() as s:
+        account = s.query(Account).filter_by(oidc_subject=subject).one_or_none()
+        if account is None:
+            org = s.query(Organization).filter_by(name="default").one()
+            account = Account(
+                organization_id=org.id, email=email, oidc_subject=subject, role="member"
+            )
+            s.add(account)
+            s.flush()
+        account_id = account.id
+
+    request.session["account_id"] = account_id
+    return RedirectResponse("/")
