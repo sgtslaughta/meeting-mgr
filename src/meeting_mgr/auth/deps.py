@@ -32,6 +32,10 @@ from meeting_mgr.models import Account
 
 
 def get_current_account(request: Request) -> Account:
+    # Untenanted, RLS-bypassing session: this runs before we know which org
+    # the request belongs to, so it can't be org-scoped. Do not copy this
+    # pattern elsewhere -- anything past authentication uses the org-scoped
+    # sessions (see issue #37).
     with get_readonly_session() as s:
         subject = request.headers.get(MTLS_SUBJECT_HEADER)
         account = None

@@ -16,7 +16,13 @@ SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
 
 @contextmanager
 def get_session():
-    """Read-write session. Commits on clean exit, rolls back on exception."""
+    """Read-write session. Commits on clean exit, rolls back on exception.
+
+    Connects as the superuser/owner, so RLS does NOT apply. Reserved for the
+    pipeline, Celery, and the three identity-bootstrap call sites (login,
+    oidc_callback, get_current_account) -- everything else should use the
+    org-scoped sessions below.
+    """
     s = SessionLocal()
     try:
         yield s
@@ -30,7 +36,11 @@ def get_session():
 
 @contextmanager
 def get_readonly_session():
-    """Read-only session. Always rolls back, so a stray write cannot commit."""
+    """Read-only session. Always rolls back, so a stray write cannot commit.
+
+    Same untenanted, RLS-bypassing connection as get_session() -- pipeline,
+    Celery, and identity-bootstrap sites only.
+    """
     s = SessionLocal()
     try:
         yield s

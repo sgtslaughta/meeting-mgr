@@ -37,6 +37,9 @@ def _view(account: Account) -> dict:
 
 @router.post("/login")
 def login(body: LoginIn, request: Request):
+    # Untenanted, RLS-bypassing session: no org is known yet, only an email,
+    # so this can't be scoped by tenant. New post-auth code must use the
+    # org-scoped sessions instead (see issue #37).
     with get_readonly_session() as s:
         account = s.query(Account).filter_by(email=body.email).one_or_none()
         has_password = account is not None and account.password_hash is not None
@@ -83,6 +86,8 @@ async def oidc_callback(request: Request):
     if not subject or not email:
         raise HTTPException(400, "OIDC provider did not return sub and email claims")
 
+    # Untenanted, RLS-bypassing session: identity bootstrap, same reasoning
+    # as login() above -- the tenant isn't known until the Account is found.
     with get_session() as s:
         account = s.query(Account).filter_by(oidc_subject=subject).one_or_none()
         if account is None:
