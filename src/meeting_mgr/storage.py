@@ -1,3 +1,4 @@
+import functools
 import shutil
 
 import boto3
@@ -6,7 +7,8 @@ from botocore.exceptions import ClientError
 from meeting_mgr.config import get_settings
 
 
-def _client():
+@functools.lru_cache(maxsize=1)
+def _get_client():
     s = get_settings()
     return boto3.client(
         "s3",
@@ -14,6 +16,20 @@ def _client():
         aws_access_key_id=s.s3_access_key,
         aws_secret_access_key=s.s3_secret_key,
     )
+
+
+def _client():
+    # lru_cache's internal lock makes the cache-miss build itself safe under
+    # concurrent Celery workers. boto3 clients are thread-safe for requests;
+    # it's the Session used to build one that isn't, so build it once.
+    return _get_client()
+
+
+def reset_client_cache() -> None:
+    """Drop the cached S3 client so the next call rebuilds it from current
+    settings. Only needed by tests that change storage settings mid-run --
+    production never needs this since settings don't change post-boot."""
+    _get_client.cache_clear()
 
 
 _MISSING = {"404", "NoSuchBucket", "NotFound"}

@@ -23,3 +23,14 @@ def test_ensure_bucket_reraises_non_404(monkeypatch):
     monkeypatch.setattr(storage, "_client", lambda: Boom())
     with pytest.raises(ClientError):
         storage.ensure_bucket()
+
+
+def test_client_is_cached():
+    # If _client() builds a fresh boto3 client every call, this identity
+    # check fails -- that's the line (`return _get_client()`) the mutation
+    # targets: swap it back to building inline and `is` becomes False.
+    storage.reset_client_cache()
+    try:
+        assert storage._client() is storage._client()
+    finally:
+        storage.reset_client_cache()
