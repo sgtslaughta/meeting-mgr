@@ -1,13 +1,16 @@
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.exc import IntegrityError
 
+from meeting_mgr.audit import record_audit
 from meeting_mgr.auth.bot_deps import get_bot_credential
 from meeting_mgr.db import get_org_session, get_readonly_org_session
-from meeting_mgr.models import BotCredential, BotSession, Meeting
-from meeting_mgr.storage import ensure_bucket, list_keys, put_stream
+from meeting_mgr.models import BotCredential, BotSession, Meeting, Recording
+from meeting_mgr.storage import ensure_bucket, list_keys, put_object, put_stream
 
 router = APIRouter(prefix="/bot")
 
@@ -43,22 +46,42 @@ def start_session(body: StartSessionIn, credential: BotCredential = Depends(get_
             m = s.get(Meeting, existing.meeting_id)
             return _response(existing, m, status_code=200)
 
-        m = Meeting(
-            organization_id=credential.organization_id,
-            owner_account_id=credential.owner_account_id,
-            title=body.title,
-            status="capturing",
-        )
-        s.add(m)
-        s.flush()
-        session = BotSession(
-            organization_id=credential.organization_id,
-            bot_credential_id=credential.id,
-            meeting_id=m.id,
-            platform_meeting_id=body.platform_meeting_id,
-        )
-        s.add(session)
-        s.flush()
+        try:
+            # SAVEPOINT: a concurrent request that also passed the
+            # check-above can still win the uq_bot_session_credential_platform
+            # race at INSERT time. Only this nested block rolls back on that
+            # conflict, not the whole session -- and the loser replays the
+            # winner's row as an ordinary 200 instead of surfacing the
+            # IntegrityError as a 500. A bot retrying after a network blip
+            # must see idempotent success, not an error to retry again.
+            with s.begin_nested():
+                m = Meeting(
+                    organization_id=credential.organization_id,
+                    owner_account_id=credential.owner_account_id,
+                    title=body.title,
+                    status="capturing",
+                )
+                s.add(m)
+                s.flush()
+                session = BotSession(
+                    organization_id=credential.organization_id,
+                    bot_credential_id=credential.id,
+                    meeting_id=m.id,
+                    platform_meeting_id=body.platform_meeting_id,
+                )
+                s.add(session)
+                s.flush()
+        except IntegrityError:
+            session = (
+                s.query(BotSession)
+                .filter_by(
+                    bot_credential_id=credential.id,
+                    platform_meeting_id=body.platform_meeting_id,
+                )
+                .one()
+            )
+            m = s.get(Meeting, session.meeting_id)
+            return _response(session, m, status_code=200)
         return _response(session, m, status_code=201)
 
 
@@ -121,3 +144,66 @@ def list_chunks(session_id: int, credential: BotCredential = Depends(get_bot_cre
     prefix = _bot_chunk_prefix(meeting_id)
     seqs = sorted(_bot_chunk_seq(prefix, k) for k in list_keys(prefix))
     return {"seqs": seqs}
+
+
+def run_pipeline(meeting_id: int) -> None:
+    """Module-level indirection, same pattern as api/capture.py and
+    pipeline/watch.py -- deferred import, monkeypatchable in tests. Defined
+    here rather than imported from api/capture.py so this module has no
+    import-time dependency on an unrelated adapter's file."""
+    from meeting_mgr.pipeline.orchestrate import run_pipeline as task
+
+    task.delay(meeting_id)
+
+
+@router.post("/sessions/{session_id}/finish")
+def finish_session(session_id: int, credential: BotCredential = Depends(get_bot_credential)):
+    with get_org_session(credential.organization_id) as s:
+        session = _owned_session(s, session_id, credential)
+        m = s.get(Meeting, session.meeting_id)
+        if m.status != "capturing":
+            # Covers both a second finish() call and any other state the
+            # Meeting has already left "capturing" for. The sweep
+            # (pipeline/bot.py) only ever touches Meetings still in
+            # "capturing", so a legitimately finished Meeting (status now
+            # "pending" or "failed") can never be raced by it afterwards.
+            raise HTTPException(409, "session is not in a capturing state")
+        meeting_id = m.id
+        prefix = _bot_chunk_prefix(meeting_id)
+        # Ordered on the parsed integer sequence, never lexically -- "10"
+        # sorts before "9" as a string, which would silently scramble chunk
+        # order past ten chunks. Same reasoning as capture.py's finish.
+        keys = sorted(list_keys(prefix), key=lambda k: _bot_chunk_seq(prefix, k))
+
+        if not keys:
+            # No pipeline run to enqueue -- there is nothing to process --
+            # and this is not a 4xx: the bot process is not a human who
+            # would see an error code and retry. The failure must be
+            # visible later, through the ordinary Meeting list, to whoever
+            # owns it. failed_stage="bot_ingest" is not one of the real
+            # pipeline stage names (orchestrate.py's STAGES), so it reads
+            # distinctly from "a pipeline stage failed."
+            m.status, m.failed_stage = "failed", "bot_ingest"
+            record_audit(
+                s,
+                organization_id=credential.organization_id,
+                actor_account_id=None,
+                action="meeting.bot_ingest.empty",
+                target=f"meeting:{meeting_id}",
+            )
+            return {"meeting_id": meeting_id, "status": "failed"}
+
+        manifest_key = f"raw/{meeting_id}/bot-manifest.json"
+        put_object(manifest_key, json.dumps(keys).encode())
+        s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))
+        m.status = "pending"
+        record_audit(
+            s,
+            organization_id=credential.organization_id,
+            actor_account_id=None,
+            action="meeting.bot_ingest.finish",
+            target=f"meeting:{meeting_id}",
+            detail={"chunk_count": len(keys)},
+        )
+    run_pipeline(meeting_id)
+    return {"meeting_id": meeting_id, "status": "pending"}
