@@ -25,10 +25,6 @@ services:
     command: alembic upgrade head
     environment: &app_env
       DATABASE_URL: postgresql+psycopg://postgres:meeting@postgres:5432/meeting_mgr
-      # Least-privilege role RLS policies apply to; used by
-      # get_org_session/get_readonly_org_session (api/worker only -- the
-      # migrate service still runs DDL as the superuser above).
-      DATABASE_URL_APP: postgresql+psycopg://meeting_app:meeting_app@postgres:5432/meeting_mgr
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: meeting
@@ -51,7 +47,21 @@ services:
   api:
     build: .
     command: uvicorn meeting_mgr.api.main:app --host 0.0.0.0 --port 8000
-    environment: *app_env
+    environment:
+      <<: *app_env
+      # Least-privilege role RLS policies apply to; used by
+      # get_org_session/get_readonly_org_session. The migrate service still
+      # runs DDL as the superuser DATABASE_URL above -- it is what creates
+      # this role and its policies, so it cannot connect as it.
+      DATABASE_URL_APP: postgresql+psycopg://meeting_app:meeting_app@postgres:5432/meeting_mgr
+      SESSION_SECRET: "${SESSION_SECRET:?SESSION_SECRET is required}"
+      # Comma-separated source IPs of reverse proxies allowed to set the
+      # x-ssl-client-subject header. Empty (the default) means mTLS identity
+      # is never trusted from anywhere -- see auth/mtls.py.
+      MTLS_PROXY_ALLOWLIST_RAW: "${MTLS_PROXY_ALLOWLIST:-}"
+      OIDC_DISCOVERY_URL: "${OIDC_DISCOVERY_URL:-}"
+      OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-}"
+      OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-}"
     extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["8000:8000"]
     depends_on:
