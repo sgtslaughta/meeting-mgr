@@ -34,14 +34,6 @@ def create_bot_credential(
     return cred, f"{cred.id}.{secret}"
 
 
-def get_bot_credential_by_id(s, credential_id: int) -> BotCredential | None:
-    """Unscoped lookup by primary key. Callers that need tenancy (the admin
-    API) should check organization_id on the returned row themselves; the
-    token-resolution auth dependency needs this shape because org_id isn't
-    known until the row is loaded."""
-    return s.get(BotCredential, credential_id)
-
-
 def list_bot_credentials(s, org_id: int) -> list[BotCredential]:
     return s.query(BotCredential).filter_by(organization_id=org_id).order_by(BotCredential.id).all()
 

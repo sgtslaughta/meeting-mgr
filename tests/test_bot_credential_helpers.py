@@ -3,12 +3,11 @@ import uuid
 from meeting_mgr.auth.password import verify_password
 from meeting_mgr.bot_credentials import (
     create_bot_credential,
-    get_bot_credential_by_id,
     list_bot_credentials,
     revoke_bot_credential,
 )
 from meeting_mgr.db import get_org_session, get_session
-from meeting_mgr.models import Account, Organization
+from meeting_mgr.models import Account, BotCredential, Organization
 
 
 def _org() -> int:
@@ -49,26 +48,6 @@ def test_two_credentials_get_different_tokens():
         _, token1 = create_bot_credential(s, org_id, label="a", owner_account_id=account_id)
         _, token2 = create_bot_credential(s, org_id, label="b", owner_account_id=account_id)
     assert token1 != token2
-
-
-def test_get_by_id_returns_none_when_absent():
-    with get_session() as s:
-        assert get_bot_credential_by_id(s, 999999) is None
-
-
-def test_get_by_id_returns_the_matching_row():
-    org_id = _org()
-    account_id = _account(org_id)
-    with get_session() as s:
-        cred, _ = create_bot_credential(s, org_id, label="zoom-bot-1", owner_account_id=account_id)
-        cred_id = cred.id
-
-    with get_session() as s:
-        found = get_bot_credential_by_id(s, cred_id)
-    assert found is not None
-    assert found.id == cred_id
-    assert found.label == "zoom-bot-1"
-    assert found.organization_id == org_id
 
 
 def test_list_scopes_by_organization():
@@ -193,5 +172,5 @@ def test_revoke_requires_credential_id_and_org_id_to_agree():
         assert revoke_bot_credential(s, org_b, cred_a_id) is None
 
     with get_session() as s:
-        untouched = get_bot_credential_by_id(s, cred_a_id)
+        untouched = s.get(BotCredential, cred_a_id)
     assert untouched.revoked_at is None, "disagreeing org_id must not revoke anything"
