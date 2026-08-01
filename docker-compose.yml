@@ -81,6 +81,19 @@ services:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_started }
       minio: { condition: service_started }
+  beat:
+    build: .
+    # Runs the schedule registered in pipeline/app.py's beat_schedule
+    # (currently just sweep-retention-daily). A separate process from
+    # `worker` -- beat only enqueues tasks on schedule, it does not execute
+    # them; `worker` still does the actual purge_organization/sweep_retention
+    # task bodies, same as every other queued task.
+    command: celery -A meeting_mgr.pipeline.app beat -l info
+    environment: *app_env
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
   diarizer:
     build: ./services/diarizer
     environment: { HF_TOKEN: "${HF_TOKEN:?HF_TOKEN is required for pyannote}" }
