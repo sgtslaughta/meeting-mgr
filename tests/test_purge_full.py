@@ -154,6 +154,43 @@ def test_purge_meeting_full_cannot_reach_a_meeting_in_another_organization():
         )
 
 
+def test_purge_meeting_full_does_not_touch_a_sibling_meeting_in_the_same_org():
+    """RLS scopes by organization, not by meeting -- a filter mistake that
+    widens from meeting_id to organization_id would pass every cross-org
+    test while destroying every other meeting in the same org. Guard
+    against that class of bug directly."""
+    from meeting_mgr.pipeline.purge import purge_meeting_full
+
+    org_id = _org()
+    victim_id, _ = _full_meeting(org_id)
+    sibling_id, sibling_participant_id = _full_meeting(org_id)
+    with get_session() as s:
+        sibling_rec = s.query(Recording).filter_by(meeting_id=sibling_id).one()
+        sibling_raw_key, sibling_norm_key = sibling_rec.raw_key, sibling_rec.normalized_key
+
+    purge_meeting_full(org_id, victim_id)
+
+    with get_session() as s:
+        assert s.get(Meeting, victim_id) is None
+
+        assert s.query(Meeting).filter_by(id=sibling_id).count() == 1
+        assert s.query(Recording).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(Segment).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(SpeakerCluster).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(ActionItem).filter_by(meeting_id=sibling_id).count() == 1
+        sibling_cluster_ids = [
+            c.id for c in s.query(SpeakerCluster).filter_by(meeting_id=sibling_id).all()
+        ]
+        assert (
+            s.query(Attribution).filter(Attribution.cluster_id.in_(sibling_cluster_ids)).count()
+            == 1
+        )
+        assert s.get(Participant, sibling_participant_id) is not None
+
+    assert get_object(sibling_raw_key) == b"raw"
+    assert get_object(sibling_norm_key) == b"norm"
+
+
 def test_purge_meeting_full_is_a_no_op_when_run_twice():
     """The sweep re-selecting a crash-interrupted purge must not raise on an
     already-purged meeting, and must not write a second audit entry."""
