@@ -1,3 +1,8 @@
+# Explicit project name -- without this it defaults to the directory name
+# ("meeting_mgr"), same as docker-compose.yml, and running both against the
+# same project silently tears down/recreates each other's containers.
+name: meeting_mgr_test
+
 services:
   postgres:
     image: postgres:17

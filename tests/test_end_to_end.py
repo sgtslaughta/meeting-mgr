@@ -102,4 +102,11 @@ def test_upload_to_published_record(tmp_path, monkeypatch):
     assert body["action_items"][0]["citations"] == [seg_id]
     assert body["action_items"][0]["provenance"] == "inferred"
     assert body["key_topics"][0]["title"] == "migration"
+    assert body["key_topics"][0]["citations"] == [seg_id]
+    assert body["key_topics"][0]["provenance"] == "inferred"
+    assert body["minutes"][0]["text"] == "Sarah committed"
+    assert body["minutes"][0]["citations"] == [seg_id]
+    assert body["minutes"][0]["provenance"] == "inferred"
     assert body["decision_points"][0]["settled"] is True
+    assert body["decision_points"][0]["citations"] == [seg_id]
+    assert body["decision_points"][0]["provenance"] == "inferred"
