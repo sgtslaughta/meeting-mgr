@@ -17,9 +17,11 @@ file would give Task 3 a forward dependency on this one.
 import logging
 import os
 import time
+from datetime import datetime
 
 from meeting_mgr.db import get_org_session
-from meeting_mgr.models import Meeting, Recording
+from meeting_mgr.models import Meeting, Recording, WatchFolder
+from meeting_mgr.pipeline.app import celery_app
 from meeting_mgr.pipeline.watch_config import (
     SCAN_INTERVAL_SECONDS,  # noqa: F401 -- re-exported for pipeline/app.py's beat comment and any caller importing it from here
 )
@@ -156,3 +158,74 @@ def ingest_file(watch_folder, path: str) -> int | None:
 
     run_pipeline(meeting_id)
     return meeting_id
+
+
+def _candidate_files(root: str):
+    """Walk root for ingest candidates, never descending into a directory
+    whose name starts with "." -- .ingested/ and .failed/ live inside the
+    watched root (see ingest_file()), and that placement is the whole
+    idempotency mechanism: re-descending into them would hand an
+    already-moved file straight back to the scanner as if it were new."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in filenames:
+            yield os.path.join(dirpath, name)
+
+
+@celery_app.task(name="meeting_mgr.scan_watch_folder")
+def scan_watch_folder(watch_folder_id: int, organization_id: int) -> None:
+    """Scan one WatchFolder: ingest every stable candidate, isolating
+    per-file failures, then update the last_scan_at/last_scan_error
+    heartbeat GET /watch-folders (Task 3) uses to flag a stalled watcher.
+
+    Identity (organization_id, owner_account_id) is read off the WatchFolder
+    row fetched via get_org_session(organization_id) -- never guessed from
+    the filesystem path or a default -- and the id/org pair always travels
+    together as this task's own arguments, dispatched by
+    scan_watch_folders() (Task 7).
+
+    One file failing to ingest (unreadable, corrupt, a storage outage) must
+    not abort the rest of the folder -- same isolation-plus-logging
+    discipline Phase 4 established in purge_organization/sweep_retention:
+    swallowing the exception without logging it would make a file that
+    fails every single scan invisible to an operator forever. ingest_file()
+    already logs path/meeting_id/error and moves the source to .failed/
+    before re-raising; this loop additionally logs watch_folder_id so an
+    operator can tell which folder is unhealthy, then folds every message
+    into last_scan_error for the heartbeat.
+
+    The heartbeat is updated unconditionally after the loop -- including
+    when every file failed -- specifically so a folder full of bad files
+    reads as "scanned, with errors" rather than "stalled": last_scan_at
+    is the only signal an operator has that the watcher process itself is
+    still alive and taking scans."""
+    with get_org_session(organization_id) as s:
+        wf = (
+            s.query(WatchFolder)
+            .filter_by(id=watch_folder_id, organization_id=organization_id)
+            .one_or_none()
+        )
+        root_path, enabled = (wf.root_path, wf.enabled) if wf else (None, False)
+
+    if not enabled:
+        return
+
+    errors: list[str] = []
+    for path in _candidate_files(root_path):
+        if not _is_stable(path):
+            continue
+        try:
+            ingest_file(wf, path)
+        except Exception as exc:
+            logger.exception(
+                "scan_watch_folder: failed to ingest path=%s watch_folder_id=%s error=%r",
+                path,
+                watch_folder_id,
+                exc,
+            )
+            errors.append(f"{os.path.relpath(path, root_path)}: {exc}")
+
+    with get_org_session(organization_id) as s:
+        row = s.get(WatchFolder, watch_folder_id)
+        row.last_scan_at = datetime.utcnow()
+        row.last_scan_error = "; ".join(errors) if errors else None
