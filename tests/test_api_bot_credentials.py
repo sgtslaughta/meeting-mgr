@@ -181,3 +181,28 @@ def test_a_second_organizations_admin_does_not_see_the_first_organizations_crede
     )
     listed = _client_as(admin_b_email).get("/bot-credentials").json()
     assert listed == []
+
+
+def test_a_duplicate_label_is_rejected_with_409_not_a_500():
+    """uq_bot_credential_org_label turns a repeat label into an
+    IntegrityError. Without a handler that surfaces as an uncaught 500;
+    the endpoint must return a 409 the caller can act on.
+
+    The third request is not testing session reuse -- it is a fresh request
+    with its own session. It pins that a rejected duplicate leaves no
+    half-created row behind that would block the next legitimate label.
+    """
+    org_id = _org()
+    admin_email, admin_id = _account(org_id, role="admin")
+    c = _client_as(admin_email)
+    first = c.post("/bot-credentials", json={"label": "dupe", "owner_account_id": admin_id})
+    assert first.status_code == 201
+
+    second = c.post("/bot-credentials", json={"label": "dupe", "owner_account_id": admin_id})
+    assert second.status_code == 409
+    assert "already exists" in second.json()["detail"]
+
+    # A different label still works afterwards -- proves the failed insert
+    # did not poison the session or leave the endpoint wedged.
+    third = c.post("/bot-credentials", json={"label": "not-dupe", "owner_account_id": admin_id})
+    assert third.status_code == 201
