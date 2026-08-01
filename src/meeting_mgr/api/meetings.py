@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import StreamingResponse
 
 from meeting_mgr.auth.deps import get_current_account
-from meeting_mgr.authz import authorize, readable_meetings_filter
+from meeting_mgr.authz import authorize, readable_meetings_filter, require_role
 from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import (
     Account,
@@ -55,6 +55,7 @@ def create_meeting(
     file: UploadFile = File(...),
     account: Account = Depends(get_current_account),
 ):
+    require_role(account, frozenset({"admin", "member"}))
     ensure_bucket()
     with get_session() as s:
         m = Meeting(

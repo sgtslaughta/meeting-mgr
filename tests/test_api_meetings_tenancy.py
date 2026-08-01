@@ -120,3 +120,11 @@ def test_create_meeting_ignores_any_client_supplied_organization(monkeypatch):
         m = s.get(Meeting, r.json()["meeting_id"])
         assert m.organization_id == org_id, "the caller's own org, never client input"
         assert m.owner_account_id == owner_id
+
+
+def test_auditor_cannot_create_a_meeting():
+    org_id = _org()
+    _, email = _account(org_id, role="auditor")
+    c = _client_as(email)
+    r = c.post("/meetings", data={"title": "t"}, files={"file": ("a.wav", b"raw", "audio/wav")})
+    assert r.status_code == 403

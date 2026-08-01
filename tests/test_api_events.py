@@ -139,3 +139,37 @@ def test_events_requires_authentication():
         mid = m.id
     r = TestClient(app).get(f"/meetings/{mid}/events")
     assert r.status_code == 401
+
+
+def test_events_from_another_organization_is_404():
+    # status="published" is deliberate, not incidental: it is a terminal
+    # status, so stream_events() yields the snapshot and returns immediately
+    # instead of blocking in subscribe() -- which means an *authorized*
+    # caller genuinely gets a 200 with a real event-stream body from plain
+    # TestClient, not a hang. If the meeting were left in a non-terminal
+    # status with no live publisher, or missing organization_id/visibility
+    # entirely, the request could 404 (or hang) for a reason that has
+    # nothing to do with authorization, which would make this test pass
+    # vacuously even with authorize() deleted from stream_events().
+    with get_session() as s:
+        org_a = Organization(name=f"org-a-{uuid.uuid4()}")
+        org_b = Organization(name=f"org-b-{uuid.uuid4()}")
+        s.add_all([org_a, org_b])
+        s.flush()
+        acct = Account(
+            organization_id=org_a.id,
+            email=f"a-{uuid.uuid4()}@x.com",
+            password_hash=hash_password("pw"),
+        )
+        m = Meeting(
+            organization_id=org_b.id,
+            title="t",
+            status="published",
+            visibility="organization",
+        )
+        s.add_all([acct, m])
+        s.flush()
+        email, mid = acct.email, m.id
+    c = TestClient(app)
+    c.post("/auth/login", json={"email": email, "password": "pw"})
+    assert c.get(f"/meetings/{mid}/events").status_code == 404
