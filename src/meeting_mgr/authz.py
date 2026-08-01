@@ -12,6 +12,16 @@ must call require_role() and nothing else. A second hand-rolled org/role
 comparison anywhere else in the codebase is a defect, not redundancy: it is
 a second place authorization can be wrong.
 
+One deliberate exception: the bot ingest endpoints in api/bot.py touch
+Meetings but call neither authorize() nor require_role(). A bot is not an
+Account, so there is no principal for either to evaluate. Their
+authorization is get_bot_credential() (auth/bot_deps.py): a valid,
+unrevoked credential may act only within its own organization, and every
+organization_id they write comes from the resolved credential row rather
+than from client input. This is the only sanctioned bypass — an audit that
+greps for "every Meeting endpoint calls authorize()" should expect exactly
+these routes and nothing else.
+
 _can_read() and readable_meetings_filter() are two encodings of the SAME
 read-visibility rule — one evaluated per-Meeting in Python, one compiled to
 a SQL predicate for filtering a list. They are kept adjacent here

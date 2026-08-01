@@ -3,6 +3,8 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from meeting_mgr.api.audit_log import router as audit_log_router
 from meeting_mgr.api.auth import router as auth_router
+from meeting_mgr.api.bot import router as bot_router
+from meeting_mgr.api.bot_credentials import router as bot_credentials_router
 from meeting_mgr.api.capture import router as capture_router
 from meeting_mgr.api.edits import router as edits_router
 from meeting_mgr.api.meetings import router
@@ -29,6 +31,8 @@ app.include_router(audit_log_router)
 app.include_router(retention_router)
 app.include_router(watch_folders_router)
 app.include_router(capture_router)
+app.include_router(bot_credentials_router)
+app.include_router(bot_router)
 
 
 @app.get("/health")
