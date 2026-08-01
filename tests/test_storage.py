@@ -21,6 +21,11 @@ def test_ensure_bucket_reraises_non_404(monkeypatch):
             raise AssertionError("must not create a bucket on a 403")
 
     monkeypatch.setattr(storage, "_client", lambda: Boom())
+    # Other tests (this one may run after them) have already ensured this
+    # same bucket name successfully, which the "already ensured" cache would
+    # otherwise short-circuit on -- never calling head_bucket at all, and
+    # silently passing this test for the wrong reason.
+    storage.reset_bucket_cache()
     with pytest.raises(ClientError):
         storage.ensure_bucket()
 
@@ -34,3 +39,19 @@ def test_client_is_cached():
         assert storage._client() is storage._client()
     finally:
         storage.reset_client_cache()
+
+
+def test_ensure_bucket_head_bucket_called_once(monkeypatch):
+    calls = {"head_bucket": 0}
+
+    class Counting:
+        def head_bucket(self, **kw):
+            calls["head_bucket"] += 1
+
+    monkeypatch.setattr(storage, "_client", lambda: Counting())
+    storage.reset_bucket_cache()
+    storage.ensure_bucket()
+    storage.ensure_bucket()
+    # Deleting the "already ensured" short-circuit (the `if b in
+    # _ensured_buckets: return` line) makes this 2, not 1.
+    assert calls["head_bucket"] == 1

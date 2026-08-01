@@ -1,5 +1,6 @@
 import functools
 import shutil
+import threading
 
 import boto3
 from botocore.exceptions import ClientError
@@ -34,9 +35,21 @@ def reset_client_cache() -> None:
 
 _MISSING = {"404", "NoSuchBucket", "NotFound"}
 
+_ensured_buckets: set[str] = set()
+_ensured_lock = threading.Lock()
+
+
+def reset_bucket_cache() -> None:
+    """Forget which buckets have been confirmed to exist. Only needed by
+    tests that delete/recreate the bucket out from under a running process."""
+    with _ensured_lock:
+        _ensured_buckets.clear()
+
 
 def ensure_bucket() -> None:
     b = get_settings().s3_bucket
+    if b in _ensured_buckets:
+        return
     try:
         _client().head_bucket(Bucket=b)
     except ClientError as e:
@@ -46,6 +59,8 @@ def ensure_bucket() -> None:
         if e.response.get("Error", {}).get("Code") not in _MISSING:
             raise
         _client().create_bucket(Bucket=b)
+    with _ensured_lock:
+        _ensured_buckets.add(b)
 
 
 def put_object(key: str, data: bytes) -> None:
