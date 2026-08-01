@@ -55,3 +55,21 @@ def test_transcribe_audio_rejects_a_response_missing_segments(fake_inference):
         fake_inference.push_transcription({"text": "no segments key here"})
     with pytest.raises(InferenceError):
         transcribe_audio(b"WAVDATA", base_url=f"{fake_inference.base_url}/v1")
+
+
+def test_transcribe_audio_does_not_swallow_unrelated_value_errors(monkeypatch, fake_inference):
+    # json.JSONDecodeError subclasses ValueError; catching bare ValueError
+    # (as asr.py used to) also swallows unrelated ValueErrors and masks them
+    # as ordinary parse-failure retries. A genuine, non-JSON ValueError must
+    # propagate immediately, uncaught and unretried.
+    from meeting_mgr.inference import asr as asr_mod
+
+    fake_inference.push_transcription({"segments": []})
+
+    def boom(data):
+        raise ValueError("unrelated failure")
+
+    monkeypatch.setattr(asr_mod._AsrResponse, "model_validate", boom)
+    with pytest.raises(ValueError, match="unrelated failure"):
+        transcribe_audio(b"WAVDATA", base_url=f"{fake_inference.base_url}/v1")
+    assert len(fake_inference.requests) == 1, "must not retry a non-JSON ValueError"

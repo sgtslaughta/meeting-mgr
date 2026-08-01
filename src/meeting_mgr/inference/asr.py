@@ -1,3 +1,4 @@
+import json
 import time
 
 import httpx
@@ -42,7 +43,7 @@ def transcribe_audio(audio, base_url: str | None = None) -> list[dict]:
             # has no `segments` at all, and the two must not look the same.
             data = _AsrResponse.model_validate(r.json())
             return [seg.model_dump() for seg in data.segments]
-        except (httpx.HTTPError, ValueError, ValidationError) as e:
+        except (httpx.HTTPError, json.JSONDecodeError, ValidationError) as e:
             last = e
             if attempt < MAX_ATTEMPTS - 1:
                 time.sleep(0.5 * 2**attempt)
