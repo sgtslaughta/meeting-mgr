@@ -16,6 +16,19 @@ Once the upload finishes, the meeting appears in the list with status
 `pending`, and processing starts automatically. You don't trigger anything
 else — no "start processing" button.
 
+## Recording live in the browser
+
+Next to the upload form on the meetings list page there's a second option:
+record straight from your browser instead of uploading a file afterwards.
+Type a title, click **Start capture**, and your browser starts streaming
+audio to Meeting-MGR in the background as you speak — there's nothing to
+save and upload separately. Click **Stop** when the meeting ends and the
+recording finishes uploading and moves into the same processing pipeline as
+an uploaded file.
+
+This is available to any signed-in user (not just admins) — the same
+audience as uploading a file.
+
 ## What the processing stages mean
 
 A recording moves through a fixed pipeline. In order:

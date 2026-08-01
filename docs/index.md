@@ -28,21 +28,25 @@ non-negotiable in the design.
 
 - **[User guide](user-guide.md)** — you attend meetings and want to upload a
   recording, review who said what, and read the resulting minutes.
-- **[Admin guide](admin-guide.md)** — you're standing this up: docker-compose,
-  environment variables, the inference endpoint, the diarizer, storage,
-  migrations, backup, and — importantly — what security is and isn't in place
-  today.
+- **[Admin guide](admin-guide.md)** — you're standing this up: getting
+  started, docker-compose, environment variables, ingest paths, retention
+  and purge, the inference endpoint, the diarizer, storage, migrations, and
+  backup.
+- **[Security status](security.md)** — authentication, authorization,
+  tenancy, and what's still worth knowing.
 - **[Architecture Decision Records](adr/0001-inference-over-http.md)** — why
   the system is shaped the way it is.
 - **[Domain glossary](https://github.com/sgtslaughta/meeting-mgr/blob/main/CONTEXT.md)**
   (`CONTEXT.md`) — the vocabulary this documentation uses throughout
   (Participant vs. Account, Provenance, Speaker Cluster, and the rest).
 
-## Read this before you deploy it anywhere reachable
+## Security, before you deploy it anywhere reachable
 
-Meeting-MGR has **no authentication or authorization yet**. Any caller that
-can reach the API can read and change any meeting. Organizations, Accounts,
-Roles and the Audit Log are tracked as
-[Phase 3](https://github.com/sgtslaughta/meeting-mgr/issues/30) and not built.
-See the admin guide's [Security status](admin-guide.md#security-status-read-this-first)
-section before you put this on any network you don't fully trust.
+Meeting-MGR authenticates every request (OIDC, local password, or optional
+mTLS), enforces org-wide Roles (`admin`/`member`/`auditor`) and per-meeting
+Visibility, and backs tenant isolation with Postgres row-level security —
+not just an application-layer check. A handful of caveats remain (an
+unexpiring bot bearer token, OIDC auto-provisioning into a single default
+organization, a known dependency advisory). Read the
+[Security status](security.md) page for the full, current picture before
+you put this on any network you don't fully trust.

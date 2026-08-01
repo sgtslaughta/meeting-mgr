@@ -5,109 +5,13 @@ sees, read the [user guide](user-guide.md) instead.
 
 ## Security status — read this first
 
-**Authentication and authorization are being added in this phase (Phase 3)
-and are not yet complete.** Organizations, Accounts, Roles
-(`admin`/`member`/`auditor`), per-meeting Visibility, and Postgres
-row-level security are landing incrementally; until this phase is finished
-and this warning is removed, assume the deployment is **not** fully
-protected — treat any endpoint you haven't personally verified is
-authorization-checked as open to any caller that can reach it.
-
-That work is scoped and tracked as
-[Phase 3 — GitHub issue #30](https://github.com/sgtslaughta/meeting-mgr/issues/30)
-(OIDC, local password, optional mTLS, `admin`/`member`/`auditor` Roles,
-per-meeting Visibility, Postgres row-level security, an append-only Audit
-Log).
-
-**Practical consequence:** do not expose the API (or the `web` container,
-which proxies to it) to any network you don't fully trust. A reverse proxy
-with your own auth in front of it, or keeping it on a private network/VPN,
-is a required mitigation today, not an optional hardening step.
-
-### OIDC auto-provisioning and the default organization
-
-`GET /auth/oidc/callback` upserts an Account keyed on `oidc_subject` and
-places every newly-provisioned account in the **`default`** Organization
-with `role="member"`. A `member` can read every meeting whose visibility is
-`organization`.
-
-**This is an operator decision you must consciously accept, not a footnote:**
-pointing this deployment at an identity provider means **every user that
-IdP will authenticate becomes a member of the default organization** and
-gains read access to its organization-visible meetings. For a single-company
-self-hosted instance with its own IdP, this is the desired behaviour —
-first-time SSO login just works, no invite flow needed. It becomes a
-problem the moment the deployment points at a shared or multi-tenant IdP
-(e.g. a generic Google Workspace/Okta tenant used by other, unrelated
-apps), or once a second Organization is ever added to this instance.
-
-**What to do about it:** only point this deployment at an IdP whose entire
-user base should have access to the default organization. Do not wire it
-up to an IdP that authenticates people outside that trust boundary.
-[GitHub issue #36](https://github.com/sgtslaughta/meeting-mgr/issues/36)
-tracks whether to add org-to-claim mapping so a single IdP could serve
-multiple Organizations safely; until that lands, one IdP means one trusted
-user population.
-
-### Upgrading an existing deployment makes every old meeting private
-
-Phase 3's migration adds `Meeting.visibility` (`NOT NULL`,
-`server_default='private'`) and `Meeting.owner_account_id` (nullable).
-Every meeting created before Phase 3 therefore becomes **private with no
-owner** the moment the migration runs.
-
-Once authorization is enforced, a `private` meeting is readable only by its
-owner (there is none, for pre-existing meetings) and by the `admin`/
-`auditor` roles. **So after upgrading, ordinary members will not be able to
-see any pre-existing meeting** — this is deliberate, a security migration
-should fail closed, and defaulting new rows to `organization` visibility
-would have silently exposed your entire meeting history instead.
-
-If you're upgrading a running deployment, know the remedy before you run
-the migration: an admin can reassign ownership or change visibility on the
-pre-existing rows. For example, to make every meeting created before the
-upgrade organization-visible:
-
-```sql
-UPDATE meeting
-SET visibility = 'organization'
-WHERE created_at < '2026-07-31'  -- the date you ran the Phase 3 migration
-  AND owner_account_id IS NULL;
-```
-
-Or to assign them to a specific owner instead:
-
-```sql
-UPDATE meeting
-SET owner_account_id = <admin-account-id>   -- integer, e.g. 1
-WHERE created_at < '2026-07-31'
-  AND owner_account_id IS NULL;
-```
-
-Run either statement deliberately, after reviewing what those meetings
-actually contain — bulk-granting organization-wide visibility to your
-entire pre-existing history is exactly the exposure the default was chosen
-to avoid.
-
-### Child artifact tables have no row-level-security policy
-
-Phase 3 adds Postgres RLS to the five tables that carry tenancy directly:
-`organization` (scoped by its own `id`), `meeting`, `participant`,
-`account`, and `audit_log_entry`.
-
-Child artifact tables — `segment`, `key_topic`, `minute`, `action_item`,
-`decision_point`, `speaker_cluster`, `attribution` — carry only
-`meeting_id` and get **no policy of their own**; the `meeting_app` database
-role has full DML on them. Their tenancy rests entirely on the
-application-layer authorization chokepoint plus FK cascade from `meeting`.
-
-**The consequence worth stating plainly:** RLS is what saves you when the
-application layer has a bug. For these tables there is no such backstop —
-an authorization bug in the API would expose transcript segments and
-derived artifacts across tenants, with the database serving the rows
-happily since nothing at the Postgres layer is checking who's asking.
-Tracked as
-[GitHub issue #35](https://github.com/sgtslaughta/meeting-mgr/issues/35).
+**Authentication, authorization, and tenancy are implemented and shipped on
+`main`,** backed by Postgres row-level security as a database-level
+backstop, not just an application-layer check. See the
+[Security status](security.md) page for the full picture: what's enforced,
+the OIDC default-organization caveat, the upgrade-migration note, and the
+handful of caveats that remain (an unexpiring bot bearer token, the react-
+router advisory, superuser DB credentials during identity bootstrap).
 
 ## Architecture
 
@@ -168,6 +72,80 @@ Docker Desktop. On plain Linux Docker the compose file adds
 `extra_hosts: ["host.docker.internal:host-gateway"]` to `api`/`worker`/
 `migrate` so that default still reaches an inference server running on the
 host; if your inference endpoint lives elsewhere, override these variables.
+
+## Getting started: from a clone to a first transcribed meeting
+
+1. Clone the repo and set the environment variables `docker-compose.yml`
+   requires explicitly — at minimum `SESSION_SECRET` (see
+   [Environment variables](#environment-variables) below) and `HF_TOKEN`
+   (see [The diarizer service](#the-diarizer-service-and-hf_token)). Point
+   `ASR_*`/`LLM_*` at a real inference endpoint if you're not relying on the
+   `host.docker.internal` default.
+2. Run `docker compose up`. Wait for `migrate` to exit `0` and `api`/`worker`/
+   `web` to report healthy — see [Deployment via docker-compose](#deployment-via-docker-compose)
+   above for the startup order.
+3. Open `http://localhost:5173` (the `web` container's nginx, proxying
+   `/meetings*` to `api:8000`).
+
+### The first admin login is a real gap, not a documentation gap
+
+**As of this version, there is no bootstrap mechanism that creates a first
+Account.** This was verified directly against the code, not assumed:
+
+- The only migration that seeds any row is `0001_initial.py`, which inserts
+  one `Organization` named `default` — no `Account` row, ever.
+- There is no `POST /accounts` (or any other) endpoint that creates an
+  Account. `grep -rn "Account(" src/meeting_mgr` outside of tests turns up
+  exactly one place a new `Account` is constructed: `GET /auth/oidc/
+  callback` in `src/meeting_mgr/api/auth.py`, which auto-provisions an
+  Account the first time an OIDC subject logs in — always with
+  `role="member"`, never `admin`.
+- Local password login (`POST /auth/login`) and mTLS only ever *match* an
+  existing Account; neither can create one.
+
+**Practical consequence:** if you configure OIDC, your first login creates
+a `member` Account in the `default` organization — not an admin. If you
+don't configure OIDC (local-password-only or mTLS-only deployment), there
+is currently no way to reach a first login at all through the product's own
+surface.
+
+**The only way in today** is to create the first Account directly in
+Postgres. For a password-login admin:
+
+```
+docker compose exec api python -c "
+from meeting_mgr.auth.password import hash_password
+print(hash_password('choose-a-real-password'))
+"
+```
+
+then insert a row with that hash and `role='admin'` into the `default`
+organization (`psql`, connected as the superuser `DATABASE_URL`, not the
+least-privilege `meeting_app` role):
+
+```sql
+INSERT INTO account (organization_id, email, role, password_hash)
+SELECT id, 'you@example.com', 'admin', '<hash from above>'
+FROM organization WHERE name = 'default';
+```
+
+If you're using OIDC, log in once to auto-provision your `member` Account,
+then promote it from `psql`:
+
+```sql
+UPDATE account SET role = 'admin' WHERE email = 'you@example.com';
+```
+
+This is a product gap, not an intended workflow — flag it if you'd rather
+see a proper bootstrap command or first-run admin-invite flow.
+
+### Then: your first meeting
+
+Once you can log in as an admin, upload a recording from the meetings list
+page (see the user guide's [Uploading a recording](user-guide.md#uploading-a-recording))
+and watch it move through the pipeline. Watch-folder and meeting-bot ingest
+(below) are alternative, admin-configured ways to get audio in — you don't
+need either one for a first end-to-end run.
 
 ## Environment variables
 
@@ -257,6 +235,15 @@ pyannote output. If you deploy this, the diarizer path is the
 your own recordings before trusting it in production, and watch for
 diarization-stage failures specifically.
 
+## Ingest paths beyond upload
+
+Uploading a file from the meetings list is one of four ways audio reaches
+the pipeline. Watch-folder ingest and meeting-bot ingest are admin-
+configured and covered on the [Ingest paths](ingest.md) page — including
+the mint/list/revoke lifecycle for bot credentials, the one-time-token
+warning, and the stale-session sweep. Browser capture is user-driven and
+documented in the [user guide](user-guide.md#recording-live-in-the-browser).
+
 ## Storage (MinIO/S3) and the database
 
 - **Object storage** holds two keys per meeting: `raw/{meeting_id}/{filename}`
@@ -303,6 +290,16 @@ alembic revision --autogenerate -m "describe the change"
 ```
 
 Review the generated file before applying it, as always with autogenerate.
+
+## Retention and purge
+
+`GET`/`PUT /retention-policy`, `GET /retention-policy/preview`, and
+`POST /retention-policy/purge` control **irreversible deletion** — the
+`null`-keeps-forever / `0`-purges-immediately semantics, the difference
+between a full purge and an audio-only purge, the dry-run preview, and why
+provenance doesn't protect anything from a purge are all covered in full on
+the [Retention and purge](retention.md) page. Read it before you configure
+a policy or trigger a purge — there is no undo.
 
 ## Backup and restore
 
