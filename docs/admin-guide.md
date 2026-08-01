@@ -79,7 +79,7 @@ Or to assign them to a specific owner instead:
 
 ```sql
 UPDATE meeting
-SET owner_account_id = '<admin-account-uuid>'
+SET owner_account_id = <admin-account-id>   -- integer, e.g. 1
 WHERE created_at < '2026-07-31'
   AND owner_account_id IS NULL;
 ```
