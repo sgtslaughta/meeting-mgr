@@ -124,6 +124,24 @@ def test_both_present_mtls_header_wins_over_session():
     assert r.json()["id"] != session_account_id
 
 
+def test_unmatched_mtls_header_falls_back_to_session():
+    # Documented fallback: a trusted mTLS subject naming no Account does not
+    # hard-fail the request — it falls back to an independently-valid
+    # session (e.g. a reissued certificate whose new subject isn't linked
+    # yet, but the user still has a password session). Kill: hard-failing
+    # (raising 401) as soon as the mTLS lookup misses, instead of falling
+    # through to the session branch.
+    email = f"fallback-{uuid.uuid4().hex}@example.com"
+    account_id = _account(email=email)
+
+    c = TestClient(_app_with_login())
+    c.post(f"/login/{account_id}")
+    r = c.get("/whoami", headers={MTLS_SUBJECT_HEADER: _unique("cn=reissued")})
+    assert r.status_code == 200
+    assert r.json()["id"] == account_id
+    assert r.json()["email"] == email
+
+
 def test_session_referencing_deleted_account_is_401_not_500():
     # Kill: get_current_account raising (e.g. AttributeError on a None
     # account) instead of failing closed with 401.
