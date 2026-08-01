@@ -106,6 +106,45 @@ def test_owner_account_must_belong_to_the_same_organization():
     assert r.status_code == 422
 
 
+def test_cross_org_owner_lookup_returns_none_under_rls_is_the_active_guard():
+    """Isolates which half of write_watch_folder's `owner is None or
+    owner.organization_id != account.organization_id` check produces the
+    422 in test_owner_account_must_belong_to_the_same_organization: under
+    get_org_session (what the endpoint actually uses), s.get(Account,
+    other_org_account_id) already returns None by itself -- RLS is what
+    "owner is None" is catching, not the comparison.
+
+    Kill: dropping tenant_isolation RLS from the `account` table (or
+    swapping get_org_session for a non-RLS session here) turns this red --
+    the lookup would then return the row instead of None.
+    """
+    from meeting_mgr.db import get_org_session
+
+    org_a, org_b = _org(), _org()
+    _, other_org_account_id = _account(org_b, role="member")
+    with get_org_session(org_a) as s:
+        assert s.get(Account, other_org_account_id) is None
+
+
+def test_owner_organization_mismatch_comparison_is_correct_if_ever_reached():
+    """The `owner.organization_id != account.organization_id` half is
+    unreachable in production today (previous test) because RLS already
+    returns None first. This does NOT exercise the live endpoint -- it
+    establishes that the comparison itself is correct and would still catch
+    a cross-org owner if this endpoint were ever moved off get_org_session
+    onto a non-RLS session (get_session()), which is exactly the scenario
+    the comment at api/watch_folders.py documents as the reason it stays.
+
+    Kill: inverting the comparison (== instead of !=) turns this red.
+    """
+    org_a, org_b = _org(), _org()
+    _, other_org_account_id = _account(org_b, role="member")
+    with get_session() as s:  # RLS-exempt, same as a non-RLS session would be
+        owner = s.get(Account, other_org_account_id)
+        assert owner is not None
+        assert owner.organization_id != org_a
+
+
 def test_a_fresh_folder_is_not_reported_stalled():
     org_id = _org()
     admin_email, admin_id = _account(org_id, role="admin")

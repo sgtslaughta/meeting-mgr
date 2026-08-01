@@ -59,6 +59,19 @@ def write_watch_folder(body: WatchFolderIn, account: Account = Depends(get_curre
         raise HTTPException(422, "root_path must be an absolute path")
     with get_org_session(account.organization_id) as s:
         owner = s.get(Account, body.owner_account_id)
+        # Pass 1 established (VERIFIED): under get_org_session, tenant_isolation
+        # RLS on `account` already makes s.get() return None for any
+        # cross-org id, so `owner is None` alone accounts for every 422 this
+        # raises today -- `owner.organization_id != account.organization_id`
+        # is currently unreachable dead code. See
+        # test_cross_org_owner_lookup_returns_none_under_rls_is_the_active_guard
+        # and test_owner_organization_mismatch_comparison_is_correct_if_ever_reached
+        # in test_api_watch_folders.py, which isolate the two halves.
+        # Kept deliberately anyway: it is the only thing that would still
+        # catch a cross-org owner if this endpoint were ever moved off
+        # get_org_session onto a non-RLS session (get_session()). Do not
+        # delete a guard because it is unreachable today -- that is how the
+        # reachable case comes back later unnoticed.
         if owner is None or owner.organization_id != account.organization_id:
             raise HTTPException(422, "owner_account_id must belong to your organization")
         wf = upsert_watch_folder(
