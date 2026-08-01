@@ -1,3 +1,4 @@
+import functools
 from contextlib import contextmanager
 
 from sqlalchemy import create_engine, text
@@ -10,8 +11,47 @@ class Base(DeclarativeBase):
     pass
 
 
-engine = create_engine(get_settings().database_url, pool_pre_ping=True)
-SessionLocal = sessionmaker(bind=engine, expire_on_commit=False)
+@functools.lru_cache(maxsize=1)
+def _get_engine():
+    """Owner/superuser engine -- RLS-bypassing. Built on first use, not at
+    import, so `import meeting_mgr.db` (e.g. from models/*.py, for Base)
+    never opens a connection on its own."""
+    return create_engine(get_settings().database_url, pool_pre_ping=True)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_session_local():
+    return sessionmaker(bind=_get_engine(), expire_on_commit=False)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_org_engine():
+    """Least-privilege `meeting_app` engine -- the one RLS policies actually
+    apply to. See the module docstring on get_org_session for why this must
+    stay a genuinely different role from _get_engine(), never the same URL."""
+    return create_engine(get_settings().database_url_app, pool_pre_ping=True)
+
+
+@functools.lru_cache(maxsize=1)
+def _get_org_session_local():
+    return sessionmaker(bind=_get_org_engine(), expire_on_commit=False)
+
+
+def __getattr__(name):
+    # PEP 562 module __getattr__: keeps `engine` / `org_engine` /
+    # `SessionLocal` / `OrgSessionLocal` importable exactly as before
+    # (`from meeting_mgr.db import engine`, `db.org_engine`, ...), but only
+    # builds the underlying engine the first time one of those names is
+    # actually touched -- not merely on `import meeting_mgr.db`.
+    if name == "engine":
+        return _get_engine()
+    if name == "org_engine":
+        return _get_org_engine()
+    if name == "SessionLocal":
+        return _get_session_local()
+    if name == "OrgSessionLocal":
+        return _get_org_session_local()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 @contextmanager
@@ -23,7 +63,7 @@ def get_session():
     oidc_callback, get_current_account, get_bot_credential) -- everything
     else should use the org-scoped sessions below.
     """
-    s = SessionLocal()
+    s = _get_session_local()()
     try:
         yield s
         s.commit()
@@ -41,7 +81,7 @@ def get_readonly_session():
     Same untenanted, RLS-bypassing connection as get_session() -- pipeline,
     Celery, and the four identity-bootstrap sites only.
     """
-    s = SessionLocal()
+    s = _get_session_local()()
     try:
         yield s
     finally:
@@ -52,9 +92,8 @@ def get_readonly_session():
 # Org-scoped sessions connect as the least-privilege `meeting_app` role (see
 # migration xxxx_enable_rls) rather than the superuser `engine` above, which
 # is what makes the tenant_isolation RLS policies actually apply -- Postgres
-# exempts superusers and table owners from RLS by default.
-org_engine = create_engine(get_settings().database_url_app, pool_pre_ping=True)
-OrgSessionLocal = sessionmaker(bind=org_engine, expire_on_commit=False)
+# exempts superusers and table owners from RLS by default. See _get_org_engine
+# above; org_engine/OrgSessionLocal remain importable via module __getattr__.
 
 
 def _set_org_id(s, org_id: int) -> None:
@@ -85,7 +124,7 @@ def get_org_session(org_id: int):
     query, which together are what keep one request's org_id from leaking
     into the next request's pooled connection.
     """
-    s = OrgSessionLocal()
+    s = _get_org_session_local()()
     try:
         _set_org_id(s, org_id)
         yield s
@@ -100,7 +139,7 @@ def get_org_session(org_id: int):
 @contextmanager
 def get_readonly_org_session(org_id: int):
     """Read-only counterpart of get_org_session. Always rolls back."""
-    s = OrgSessionLocal()
+    s = _get_org_session_local()()
     try:
         _set_org_id(s, org_id)
         yield s
