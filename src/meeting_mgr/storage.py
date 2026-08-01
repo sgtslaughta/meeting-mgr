@@ -1,4 +1,6 @@
+import functools
 import shutil
+import threading
 
 import boto3
 from botocore.exceptions import ClientError
@@ -6,7 +8,8 @@ from botocore.exceptions import ClientError
 from meeting_mgr.config import get_settings
 
 
-def _client():
+@functools.lru_cache(maxsize=1)
+def _get_client():
     s = get_settings()
     return boto3.client(
         "s3",
@@ -16,11 +19,37 @@ def _client():
     )
 
 
+def _client():
+    # lru_cache's internal lock makes the cache-miss build itself safe under
+    # concurrent Celery workers. boto3 clients are thread-safe for requests;
+    # it's the Session used to build one that isn't, so build it once.
+    return _get_client()
+
+
+def reset_client_cache() -> None:
+    """Drop the cached S3 client so the next call rebuilds it from current
+    settings. Only needed by tests that change storage settings mid-run --
+    production never needs this since settings don't change post-boot."""
+    _get_client.cache_clear()
+
+
 _MISSING = {"404", "NoSuchBucket", "NotFound"}
+
+_ensured_buckets: set[str] = set()
+_ensured_lock = threading.Lock()
+
+
+def reset_bucket_cache() -> None:
+    """Forget which buckets have been confirmed to exist. Only needed by
+    tests that delete/recreate the bucket out from under a running process."""
+    with _ensured_lock:
+        _ensured_buckets.clear()
 
 
 def ensure_bucket() -> None:
     b = get_settings().s3_bucket
+    if b in _ensured_buckets:
+        return
     try:
         _client().head_bucket(Bucket=b)
     except ClientError as e:
@@ -30,6 +59,8 @@ def ensure_bucket() -> None:
         if e.response.get("Error", {}).get("Code") not in _MISSING:
             raise
         _client().create_bucket(Bucket=b)
+    with _ensured_lock:
+        _ensured_buckets.add(b)
 
 
 def put_object(key: str, data: bytes) -> None:
