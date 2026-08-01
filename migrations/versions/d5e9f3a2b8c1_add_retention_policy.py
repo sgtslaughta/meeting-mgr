@@ -34,6 +34,14 @@ def upgrade() -> None:
         sa.Column("updated_at", sa.DateTime(), server_default=sa.func.now(), nullable=False),
         sa.ForeignKeyConstraint(["organization_id"], ["organization.id"]),
         sa.UniqueConstraint("organization_id", name="uq_retention_policy_org"),
+        sa.CheckConstraint(
+            "audio_retention_days IS NULL OR audio_retention_days >= 0",
+            name="ck_retention_policy_audio_retention_days_nonneg",
+        ),
+        sa.CheckConstraint(
+            "meeting_retention_days IS NULL OR meeting_retention_days >= 0",
+            name="ck_retention_policy_meeting_retention_days_nonneg",
+        ),
     )
 
     op.execute("GRANT SELECT, INSERT, UPDATE, DELETE ON retention_policy TO meeting_app")

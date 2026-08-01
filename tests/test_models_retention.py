@@ -35,6 +35,25 @@ def test_retention_policy_is_unique_per_organization():
             s.flush()
 
 
+def test_retention_policy_rejects_negative_audio_retention_days():
+    """A negative audio_retention_days would put the purge cutoff
+    (now - retention_days) in the future, making every Meeting eligible for
+    deletion -- must be rejected at the DB level."""
+    org_id = _org()
+    with pytest.raises(IntegrityError):
+        with get_session() as s:
+            s.add(RetentionPolicy(organization_id=org_id, audio_retention_days=-1))
+            s.flush()
+
+
+def test_retention_policy_rejects_negative_meeting_retention_days():
+    org_id = _org()
+    with pytest.raises(IntegrityError):
+        with get_session() as s:
+            s.add(RetentionPolicy(organization_id=org_id, meeting_retention_days=-1))
+            s.flush()
+
+
 def test_retention_policy_tenant_isolation():
     """A raw SELECT with no application-layer filter must still be confined
     to its own organization -- proves the RLS policy and the meeting_app
