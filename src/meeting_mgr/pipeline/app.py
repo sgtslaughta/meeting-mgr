@@ -22,6 +22,12 @@ celery_app.conf.update(
     task_reject_on_worker_lost=True,
     broker_transport_options={"visibility_timeout": 7200},
 )
+celery_app.conf.beat_schedule = {
+    "sweep-retention-daily": {
+        "task": "meeting_mgr.sweep_retention",
+        "schedule": 86400.0,  # once per day; run by the "beat" compose service (Task 12)
+    },
+}
 
 
 def set_stage_failure(meeting_id: int, stage: str) -> None:

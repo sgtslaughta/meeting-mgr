@@ -21,8 +21,8 @@ unreachable in application code.
 import logging
 
 from meeting_mgr.audit import record_audit
-from meeting_mgr.db import get_org_session
-from meeting_mgr.models import Meeting, Recording
+from meeting_mgr.db import get_org_session, get_readonly_session
+from meeting_mgr.models import Meeting, Recording, RetentionPolicy
 from meeting_mgr.pipeline.app import celery_app
 from meeting_mgr.retention import select_purge_candidates
 from meeting_mgr.storage import delete_object
@@ -140,5 +140,50 @@ def purge_organization(org_id: int) -> None:
                 org_id,
                 c.kind,
                 exc,
+            )
+            continue
+
+
+@celery_app.task(name="meeting_mgr.sweep_retention")
+def sweep_retention() -> None:
+    """Celery-beat entry point: find every organization with a retention
+    policy configured (either day-count set) and dispatch its purge as a
+    separate task. Uses get_readonly_session() -- the untenanted superuser
+    connection also used by the pipeline -- because this reads only the
+    retention_policy index to decide which organizations to schedule; it
+    never reads Meeting content and deletes nothing itself. Every actual
+    deletion happens inside purge_organization, which is org-scoped via
+    get_org_session(org_id) -- see the module docstring.
+
+    Dispatches with .delay() rather than calling purge_organization inline:
+    the whole point of a scheduler is that the purge work runs in a worker,
+    not in the beat process itself.
+
+    One organization failing to dispatch must not stop the sweep -- same
+    isolation-plus-logging discipline as purge_organization's per-Meeting
+    loop above. The failure is logged (with organization_id) before the
+    loop continues, so an organization that fails every night is visible to
+    an operator instead of silently stuck."""
+    with get_readonly_session() as s:
+        org_ids = [
+            row[0]
+            for row in s.query(RetentionPolicy.organization_id)
+            .filter(
+                (RetentionPolicy.audio_retention_days.isnot(None))
+                | (RetentionPolicy.meeting_retention_days.isnot(None))
+            )
+            .all()
+        ]
+    for org_id in org_ids:
+        try:
+            purge_organization.delay(org_id)
+        except Exception:
+            # Swallowed on purpose -- one organization failing to dispatch
+            # must not withhold the rest of the sweep. Logged so an
+            # organization that fails every night is visible to an
+            # operator instead of silently never getting purged.
+            logger.exception(
+                "sweep_retention: failed to dispatch purge for organization_id=%s",
+                org_id,
             )
             continue
