@@ -35,7 +35,12 @@ line-length = 100
 # Alembic-generated migration files: boilerplate from `alembic revision
 # --autogenerate`, not hand-maintained. Linting/reformatting them is
 # busywork with no benefit and risks disturbing generated DDL.
-extend-exclude = ["migrations/versions"]
+# .superpowers: internal working notes (specs, review reports, deferred
+# findings). Ruff formats Python inside markdown code fences, so an
+# illustrative before/after snippet in a report gets "reformatted" and
+# `ruff format --check .` fails -- turning a notes file into a CI break.
+# These are prose, not source.
+extend-exclude = ["migrations/versions", ".superpowers"]
 
 [tool.ruff.lint]
 # E/F: pycodestyle errors + pyflakes (correctness). I: import sorting.
