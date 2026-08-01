@@ -33,6 +33,32 @@ def _client_and_session(label="bot"):
     return c, headers, body["session_id"], body["meeting_id"]
 
 
+def _two_credentials_same_org():
+    """Two BotCredentials under the SAME organization -- unlike
+    _client_and_session()'s pairs (which also mint a fresh org each call,
+    so bot_credential_id and organization_id differ together), this isolates
+    the bot_credential_id half of _owned_session's filter. Without it, an
+    organization_id-only filter would already 404 in every existing
+    ownership test, leaving that half of the filter unpinned."""
+    ensure_bucket()
+    org_id, account_id = _org_account()
+    with get_session() as s:
+        _, token_a = create_bot_credential(
+            s, org_id, label="bot-same-org-a", owner_account_id=account_id
+        )
+        _, token_b = create_bot_credential(
+            s, org_id, label="bot-same-org-b", owner_account_id=account_id
+        )
+    c = TestClient(app)
+    headers_a = {"authorization": f"Bearer {token_a}"}
+    headers_b = {"authorization": f"Bearer {token_b}"}
+    r = c.post(
+        "/bot/sessions", json={"platform_meeting_id": "z-1", "title": "t"}, headers=headers_a
+    )
+    body = r.json()
+    return c, headers_a, headers_b, body["session_id"]
+
+
 def test_a_chunk_uploads_and_is_retrievable_from_storage():
     c, headers, session_id, meeting_id = _client_and_session()
     r = c.put(
@@ -126,6 +152,31 @@ def test_listing_for_a_session_belonging_to_another_credential_is_not_found():
     c1, headers1, session_id, _ = _client_and_session(label="bot-c")
     _, headers2, _, _ = _client_and_session(label="bot-d")
     r = c1.get(f"/bot/sessions/{session_id}/chunks", headers=headers2)
+    assert r.status_code == 404
+
+
+def test_a_session_belonging_to_another_credential_in_the_same_org_is_not_found_for_chunk_upload():
+    # Kill: dropping bot_credential_id from _owned_session's filter (leaving
+    # only organization_id, which both credentials here share) turns this
+    # 404 into a 200 -- see _owned_session in src/meeting_mgr/api/bot.py.
+    c, headers_a, headers_b, session_id = _two_credentials_same_org()
+    r = c.put(
+        f"/bot/sessions/{session_id}/chunks/0",
+        headers=headers_b,
+        files={"chunk": ("c.bin", io.BytesIO(b"x"), "application/octet-stream")},
+    )
+    assert r.status_code == 404
+
+
+def test_a_session_belonging_to_another_credential_in_the_same_org_is_not_found_for_listing():
+    c, headers_a, headers_b, session_id = _two_credentials_same_org()
+    r = c.get(f"/bot/sessions/{session_id}/chunks", headers=headers_b)
+    assert r.status_code == 404
+
+
+def test_a_session_belonging_to_another_credential_in_the_same_org_is_not_found_for_finish():
+    c, headers_a, headers_b, session_id = _two_credentials_same_org()
+    r = c.post(f"/bot/sessions/{session_id}/finish", headers=headers_b)
     assert r.status_code == 404
 
 
