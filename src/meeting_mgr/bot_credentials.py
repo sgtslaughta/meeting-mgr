@@ -48,7 +48,13 @@ def list_bot_credentials(s, org_id: int) -> list[BotCredential]:
 
 def revoke_bot_credential(s, org_id: int, credential_id: int) -> BotCredential | None:
     """Sets revoked_at. Returns None if no such credential exists in that
-    Organization -- including if it exists in a different one."""
+    Organization -- including if it exists in a different one.
+
+    Idempotent: revoking an already-revoked credential overwrites
+    revoked_at with the current timestamp and returns the row (not None).
+    The end state -- revoked -- is unchanged either way, so callers (e.g.
+    Task 3's endpoint) should treat a repeat revoke as success, not a
+    conflict."""
     cred = s.query(BotCredential).filter_by(id=credential_id, organization_id=org_id).one_or_none()
     if cred is None:
         return None
