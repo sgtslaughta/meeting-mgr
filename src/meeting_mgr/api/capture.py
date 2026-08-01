@@ -216,6 +216,13 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
                 .update({"status": "pending"}, synchronize_session=False)
             )
             if updated:
+                # Filename "manifest.json" diverges from bot.py's
+                # "bot-manifest.json" (issue #40). Inert: both normalize.py
+                # and purge.py read the object keys listed INSIDE the
+                # manifest, never scan by prefix, so this filename never
+                # participates in lookup. Do not rename -- it would orphan
+                # already-stored recordings. If a consumer is ever changed
+                # to scan by prefix, it must account for both filenames.
                 manifest_key = f"raw/{meeting_id}/manifest.json"
                 put_object(manifest_key, json.dumps(keys).encode())
                 s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))
