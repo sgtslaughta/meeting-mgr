@@ -1,16 +1,29 @@
 import io
+import uuid
 
 from fastapi.testclient import TestClient
 
 from meeting_mgr.api.main import app
+from meeting_mgr.auth.password import hash_password
 from meeting_mgr.db import get_session
-from meeting_mgr.models import ActionItem, SpeakerCluster
+from meeting_mgr.models import Account, ActionItem, Organization, SpeakerCluster
 from meeting_mgr.storage import get_object
+
+
+def _account_and_client() -> TestClient:
+    email = f"upload-{uuid.uuid4()}@x.com"
+    with get_session() as s:
+        org = s.query(Organization).filter_by(name="default").one()
+        s.add(Account(organization_id=org.id, email=email, password_hash=hash_password("pw")))
+    c = TestClient(app)
+    r = c.post("/auth/login", json={"email": email, "password": "pw"})
+    assert r.status_code == 200
+    return c
 
 
 def test_upload_creates_meeting_and_stores_recording(monkeypatch):
     monkeypatch.setattr("meeting_mgr.api.meetings.run_pipeline", lambda mid: None)
-    c = TestClient(app)
+    c = _account_and_client()
     r = c.post(
         "/meetings", data={"title": "standup"}, files={"file": ("a.m4a", b"AUDIO", "audio/mp4")}
     )
@@ -52,7 +65,7 @@ def test_upload_streams_without_reading_whole_file(monkeypatch):
 
     monkeypatch.setattr("meeting_mgr.api.meetings.put_stream", spy)
 
-    c = TestClient(app)
+    c = _account_and_client()
     r = c.post(
         "/meetings",
         data={"title": "standup"},
@@ -65,7 +78,7 @@ def test_upload_streams_without_reading_whole_file(monkeypatch):
 
 def test_read_meeting_exposes_only_allowlisted_fields(monkeypatch):
     monkeypatch.setattr("meeting_mgr.api.meetings.run_pipeline", lambda mid: None)
-    c = TestClient(app)
+    c = _account_and_client()
     mid = c.post(
         "/meetings", data={"title": "standup"}, files={"file": ("a.m4a", b"AUDIO", "audio/mp4")}
     ).json()["meeting_id"]
@@ -87,7 +100,7 @@ def test_read_meeting_exposes_only_allowlisted_fields(monkeypatch):
 
 def test_read_meeting_exposes_clusters_but_never_embeddings(monkeypatch):
     monkeypatch.setattr("meeting_mgr.api.meetings.run_pipeline", lambda mid: None)
-    c = TestClient(app)
+    c = _account_and_client()
     mid = c.post(
         "/meetings", data={"title": "t"}, files={"file": ("a.m4a", b"A", "audio/mp4")}
     ).json()["meeting_id"]

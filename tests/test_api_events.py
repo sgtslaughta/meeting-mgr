@@ -16,24 +16,44 @@ streams incrementally.
 import json
 import threading
 import time
+import uuid
 
 import httpx
 import pytest
 import uvicorn
+from fastapi.testclient import TestClient
 
 from meeting_mgr.api.main import app
+from meeting_mgr.auth.password import hash_password
 from meeting_mgr.db import get_session
-from meeting_mgr.models import Meeting, Organization
+from meeting_mgr.models import Account, Meeting, Organization
 from meeting_mgr.progress import publish
 
 
 def _meeting(status="processing", stage="transcribe") -> int:
     with get_session() as s:
         org = s.query(Organization).filter_by(name="default").one()
-        m = Meeting(organization_id=org.id, title="t", status=status, current_stage=stage)
+        m = Meeting(
+            organization_id=org.id,
+            title="t",
+            status=status,
+            current_stage=stage,
+            visibility="organization",
+        )
         s.add(m)
         s.flush()
         return m.id
+
+
+def _login(client: httpx.Client) -> None:
+    email = f"events-{uuid.uuid4()}@x.com"
+    with get_session() as s:
+        org = s.query(Organization).filter_by(name="default").one()
+        acct = Account(organization_id=org.id, email=email, password_hash=hash_password("pw"))
+        s.add(acct)
+        s.flush()
+    r = client.post("/auth/login", json={"email": email, "password": "pw"})
+    assert r.status_code == 200
 
 
 @pytest.fixture
@@ -52,6 +72,7 @@ def live_client():
 
 
 def test_stream_opens_with_a_snapshot_of_current_state(live_client):
+    _login(live_client)
     mid = _meeting()
     with live_client.stream("GET", f"/meetings/{mid}/events") as r:
         assert r.status_code == 200
@@ -65,6 +86,7 @@ def test_stream_opens_with_a_snapshot_of_current_state(live_client):
 
 
 def test_stream_delivers_published_transitions(live_client):
+    _login(live_client)
     mid = _meeting()
     seen = []
 
@@ -92,6 +114,7 @@ def test_stream_closes_on_a_live_failed_stage_not_only_on_reconnect(live_client)
     exhaustion. If the server generator did not return on a live failed
     event, this test would hang until the client's 10s timeout and fail.
     """
+    _login(live_client)
     mid = _meeting()
 
     def fail_soon():
@@ -105,3 +128,14 @@ def test_stream_closes_on_a_live_failed_stage_not_only_on_reconnect(live_client)
             if line.startswith("data:"):
                 seen.append(json.loads(line.removeprefix("data:").strip()))
     assert {"stage": "transcribe", "state": "failed"} in seen
+
+
+def test_events_requires_authentication():
+    with get_session() as s:
+        org = s.query(Organization).filter_by(name="default").one()
+        m = Meeting(organization_id=org.id, title="t", status="processing")
+        s.add(m)
+        s.flush()
+        mid = m.id
+    r = TestClient(app).get(f"/meetings/{mid}/events")
+    assert r.status_code == 401
