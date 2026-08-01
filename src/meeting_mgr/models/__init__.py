@@ -8,6 +8,7 @@ from meeting_mgr.models.meeting import (
     Recording,
 )
 from meeting_mgr.models.record import ActionItem, DecisionPoint, KeyTopic, Minute
+from meeting_mgr.models.retention import RetentionPolicy
 from meeting_mgr.models.transcript import Attribution, Segment, SpeakerCluster
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "Minute",
     "ActionItem",
     "DecisionPoint",
+    "RetentionPolicy",
 ]

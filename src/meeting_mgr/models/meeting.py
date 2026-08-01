@@ -29,7 +29,11 @@ class Recording(Base):
     __tablename__ = "recording"
     id: Mapped[int] = mapped_column(primary_key=True)
     meeting_id: Mapped[int] = mapped_column(ForeignKey("meeting.id", ondelete="CASCADE"))
-    raw_key: Mapped[str] = mapped_column(String(500))
+    # Nullable: purge_meeting_audio() (Task 6) deletes the entire Recording
+    # row after deleting the storage object, so select_purge_candidates()'s
+    # audio branch (retention.py) -- an INNER JOIN against Recording --
+    # stops reselecting an already-purged Meeting on the next sweep.
+    raw_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     normalized_key: Mapped[str | None] = mapped_column(String(500), nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
 

@@ -11,13 +11,23 @@ celery_app = Celery(
     # these modules exist and silently discards every task it receives as
     # "unregistered" -- it did, in production, from Phase 1 until this fix.
     # The compose -I flag is now redundant but kept as belt-and-braces.
-    include=["meeting_mgr.pipeline.orchestrate", "meeting_mgr.api.edits"],
+    include=[
+        "meeting_mgr.pipeline.orchestrate",
+        "meeting_mgr.api.edits",
+        "meeting_mgr.pipeline.purge",
+    ],
 )
 celery_app.conf.update(
     task_acks_late=True,  # a lost worker must not lose an hour of GPU work
     task_reject_on_worker_lost=True,
     broker_transport_options={"visibility_timeout": 7200},
 )
+celery_app.conf.beat_schedule = {
+    "sweep-retention-daily": {
+        "task": "meeting_mgr.sweep_retention",
+        "schedule": 86400.0,  # once per day; run by the "beat" compose service (Task 12)
+    },
+}
 
 
 def set_stage_failure(meeting_id: int, stage: str) -> None:
