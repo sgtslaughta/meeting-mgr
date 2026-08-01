@@ -8,11 +8,13 @@ from sqlalchemy.exc import IntegrityError
 
 from meeting_mgr.audit import record_audit
 from meeting_mgr.auth.bot_deps import get_bot_credential
+from meeting_mgr.chunk_storage import chunk_key, chunk_prefix, chunk_seq
 from meeting_mgr.db import get_org_session, get_readonly_org_session
 from meeting_mgr.models import BotCredential, BotSession, Meeting, Recording
 from meeting_mgr.storage import ensure_bucket, list_keys, put_object, put_stream
 
 router = APIRouter(prefix="/bot")
+_SUBDIR, _SUFFIX = "bot-chunks", ".chunk"
 
 
 class StartSessionIn(BaseModel):
@@ -86,15 +88,15 @@ def start_session(body: StartSessionIn, credential: BotCredential = Depends(get_
 
 
 def _bot_chunk_prefix(meeting_id: int) -> str:
-    return f"raw/{meeting_id}/bot-chunks/"
+    return chunk_prefix(meeting_id, _SUBDIR)
 
 
 def _bot_chunk_key(meeting_id: int, seq: int) -> str:
-    return f"{_bot_chunk_prefix(meeting_id)}{seq:06d}.chunk"
+    return chunk_key(meeting_id, seq, _SUBDIR, _SUFFIX)
 
 
 def _bot_chunk_seq(prefix: str, key: str) -> int:
-    return int(key.removeprefix(prefix).removesuffix(".chunk"))
+    return chunk_seq(prefix, _SUFFIX, key)
 
 
 def _owned_session(s, session_id: int, credential: BotCredential) -> BotSession:

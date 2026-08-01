@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from meeting_mgr.api.main import app
 from meeting_mgr.auth.password import hash_password
 from meeting_mgr.db import get_session
-from meeting_mgr.models import Account, Meeting, Organization
+from meeting_mgr.models import Account, Meeting, Organization, Recording
 
 
 def _org() -> int:
@@ -453,3 +453,50 @@ def test_finish_reverts_to_capturing_when_no_chunks_survive_the_flip():
         files={"chunk": ("c0.webm", io.BytesIO(b"x"), "audio/webm")},
     )
     assert r.status_code == 200
+
+
+def test_capture_chunks_reassemble_byte_for_byte_in_upload_order(monkeypatch, tmp_path):
+    """Browser-capture equivalent of
+    test_bot_ingest_end_to_end.py::test_bot_chunks_reassemble_byte_for_byte_in_upload_order
+    -- exercises the SAME shared chunk_storage.chunk_key()/chunk_seq() (item
+    2's consolidation) through capture.py's call sites instead of bot.py's,
+    with distinguishable per-chunk content, not a duration-shaped proxy.
+
+    Kill: dropping the zero-padding in chunk_storage.chunk_key ("{seq:06d}"
+    -> "{seq}") alone leaves this green -- finish_capture's explicit
+    key=lambda k: _chunk_seq(prefix, k) sorts on the parsed integer, not the
+    key string. Changing finish_capture to a plain sorted(list_keys(prefix))
+    (no key=) also alone leaves this green -- with padding intact, lexical
+    and numeric order agree below 10**6. Only doing BOTH together scrambles
+    it (verified locally, reverted before commit)."""
+    from meeting_mgr.api import capture
+
+    monkeypatch.setattr(capture, "run_pipeline", lambda meeting_id: None)
+
+    chunk_count = 12  # cross ten, same reasoning as CHUNK_COUNT in the bot test
+    chunks = [f"chunk-{seq:04d}-".encode() + bytes([seq % 256]) * 64 for seq in range(chunk_count)]
+
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    for seq, data in enumerate(chunks):
+        r = c.put(
+            f"/meetings/{meeting_id}/capture/chunks/{seq}",
+            files={"chunk": (f"c{seq}.webm", io.BytesIO(data), "audio/webm")},
+        )
+        assert r.status_code == 200
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+
+    with get_session() as s:
+        manifest_key = s.query(Recording).filter_by(meeting_id=meeting_id).one().raw_key
+        manifest_key = manifest_key.removeprefix("manifest:")
+
+    from meeting_mgr.pipeline.normalize import _write_manifest_chunks
+
+    out = tmp_path / "reconstructed.bin"
+    with out.open("wb") as fh:
+        _write_manifest_chunks(manifest_key, fh)
+
+    assert out.read_bytes() == b"".join(chunks)

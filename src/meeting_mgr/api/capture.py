@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from meeting_mgr.auth.deps import get_current_account
 from meeting_mgr.authz import authorize, require_role
+from meeting_mgr.chunk_storage import chunk_key, chunk_prefix, chunk_seq
 from meeting_mgr.db import get_org_session, get_readonly_org_session
 from meeting_mgr.models import Account, Meeting, Recording
 from meeting_mgr.storage import ensure_bucket, list_keys, put_object, put_stream
@@ -11,18 +12,19 @@ from meeting_mgr.storage import ensure_bucket, list_keys, put_object, put_stream
 router = APIRouter()
 
 _CAN_CAPTURE = frozenset({"admin", "member"})
+_SUBDIR, _SUFFIX = "chunks", ".webm"
 
 
 def _chunk_prefix(meeting_id: int) -> str:
-    return f"raw/{meeting_id}/chunks/"
+    return chunk_prefix(meeting_id, _SUBDIR)
 
 
 def _chunk_key(meeting_id: int, seq: int) -> str:
-    return f"{_chunk_prefix(meeting_id)}{seq:06d}.webm"
+    return chunk_key(meeting_id, seq, _SUBDIR, _SUFFIX)
 
 
 def _chunk_seq(prefix: str, key: str) -> int:
-    return int(key.removeprefix(prefix).removesuffix(".webm"))
+    return chunk_seq(prefix, _SUFFIX, key)
 
 
 def run_pipeline(meeting_id: int) -> None:
