@@ -75,6 +75,27 @@ def preview_purge(account: Account = Depends(get_current_account)):
         ]
 
 
+@router.post("/purge", status_code=202)
+def trigger_purge(account: Account = Depends(get_current_account)):
+    require_role(account, _ADMIN_ONLY)
+    with get_org_session(account.organization_id) as s:
+        # This entry names the human who asked for an immediate purge; the
+        # per-Meeting meeting.purge.audio/full entries purge_organization
+        # writes once it actually runs have actor_account_id=None, since by
+        # then no live Account is making the decision -- see pipeline/purge.py.
+        record_audit(
+            s,
+            organization_id=account.organization_id,
+            actor_account_id=account.id,
+            action="retention.purge.triggered",
+            target=f"organization:{account.organization_id}",
+        )
+    from meeting_mgr.pipeline.purge import purge_organization
+
+    purge_organization.delay(account.organization_id)
+    return {"status": "purge enqueued"}
+
+
 @router.put("")
 def write_policy(body: RetentionPolicyIn, account: Account = Depends(get_current_account)):
     require_role(account, _ADMIN_ONLY)
