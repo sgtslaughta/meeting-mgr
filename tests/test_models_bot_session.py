@@ -27,7 +27,12 @@ def _account(org_id: int) -> int:
 
 def _credential_and_meeting(org_id, account_id):
     with get_session() as s:
-        cred, _ = create_bot_credential(s, org_id, label="a", owner_account_id=account_id)
+        # label must be unique per (organization_id, label) as of issue #39
+        # (uq_bot_credential_org_label); a fresh label per call keeps this
+        # helper safe to call more than once for the same org.
+        cred, _ = create_bot_credential(
+            s, org_id, label=f"a-{uuid.uuid4()}", owner_account_id=account_id
+        )
         m = Meeting(
             organization_id=org_id, owner_account_id=account_id, title="t", status="capturing"
         )

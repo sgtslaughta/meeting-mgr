@@ -228,6 +228,13 @@ def finish_session(session_id: int, credential: BotCredential = Depends(get_bot_
             )
             return {"meeting_id": meeting_id, "status": "failed"}
 
+        # Filename "bot-manifest.json" (and chunks under bot-chunks/)
+        # diverges from capture.py's "manifest.json" (issue #40). Inert:
+        # both normalize.py and purge.py read the object keys listed
+        # INSIDE the manifest, never scan by prefix, so this filename never
+        # participates in lookup. Do not rename -- it would orphan
+        # already-stored recordings. If a consumer is ever changed to scan
+        # by prefix, it must account for both filenames.
         manifest_key = f"raw/{meeting_id}/bot-manifest.json"
         put_object(manifest_key, json.dumps(keys).encode())
         s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))

@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy import DateTime, ForeignKey, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from meeting_mgr.db import Base
@@ -13,9 +13,17 @@ class BotCredential(Base):
     and never inferred from the token. token_hash is a salted PBKDF2 hash
     (meeting_mgr.auth.password.hash_password) of the bearer secret; the
     plaintext secret is never stored and is returned to the admin exactly
-    once, at creation."""
+    once, at creation.
+
+    label is unique per organization (uq_bot_credential_org_label, migration
+    b8c2e6f0a1d3), matching WatchFolder's uq_watch_folder_org_path. This is
+    cosmetic/UX only: routing keys off organization_id and
+    bot_credential_id, never the label."""
 
     __tablename__ = "bot_credential"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "label", name="uq_bot_credential_org_label"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organization.id"))
