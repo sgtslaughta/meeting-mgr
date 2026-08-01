@@ -1,3 +1,5 @@
+import shutil
+
 import boto3
 from botocore.exceptions import ClientError
 
@@ -51,6 +53,24 @@ def get_object(key: str) -> bytes:
 def get_stream(key: str, fileobj) -> None:
     """Stream storage into a file-like object without buffering it all."""
     _client().download_fileobj(get_settings().s3_bucket, key, fileobj)
+
+
+def append_stream(key: str, fileobj) -> None:
+    """Stream an object onto fileobj at its CURRENT position, without
+    resetting it -- for writing multiple objects into one handle in sequence
+    (chunk-manifest reconstruction).
+
+    get_stream()/download_fileobj is NOT safe for this: s3transfer manages
+    its own internal write cursor per transfer and writes from offset 0 on
+    every call regardless of object size, so a second get_stream() into the
+    same handle silently overwrites the first instead of appending -- this
+    is not only an issue above the multipart threshold, it reproduces on
+    two small chunks. Streaming the raw response body through
+    shutil.copyfileobj instead uses plain sequential fh.write() calls, which
+    respects wherever the handle already is.
+    """
+    body = _client().get_object(Bucket=get_settings().s3_bucket, Key=key)["Body"]
+    shutil.copyfileobj(body, fileobj)
 
 
 def delete_object(key: str) -> None:
