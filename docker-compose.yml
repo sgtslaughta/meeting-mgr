@@ -25,6 +25,10 @@ services:
     command: alembic upgrade head
     environment: &app_env
       DATABASE_URL: postgresql+psycopg://postgres:meeting@postgres:5432/meeting_mgr
+      # Least-privilege role RLS policies apply to; used by
+      # get_org_session/get_readonly_org_session (api/worker only -- the
+      # migrate service still runs DDL as the superuser above).
+      DATABASE_URL_APP: postgresql+psycopg://meeting_app:meeting_app@postgres:5432/meeting_mgr
       REDIS_URL: redis://redis:6379/0
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: meeting

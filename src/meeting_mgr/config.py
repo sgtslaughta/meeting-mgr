@@ -5,6 +5,11 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:test@localhost:55432/meeting_mgr_test"
+    # Least-privilege role RLS policies actually apply to (superuser/owner
+    # bypasses RLS by default). Used by get_org_session/get_readonly_org_session.
+    database_url_app: str = (
+        "postgresql+psycopg://meeting_app:meeting_app@localhost:55432/meeting_mgr_test"
+    )
     redis_url: str = "redis://localhost:56379/0"
     s3_endpoint: str = "http://localhost:59000"
     s3_access_key: str = "test"
