@@ -7,7 +7,7 @@ from meeting_mgr.api.meetings import _FIELDS
 from meeting_mgr.audit import record_audit
 from meeting_mgr.auth.deps import get_current_account
 from meeting_mgr.authz import authorize
-from meeting_mgr.db import get_session
+from meeting_mgr.db import get_org_session
 from meeting_mgr.models import (
     Account,
     ActionItem,
@@ -42,7 +42,7 @@ def confirm_attribution(
     body: AttributionIn,
     account: Account = Depends(get_current_account),
 ):
-    with get_session() as s:
+    with get_org_session(account.organization_id) as s:
         meeting = s.get(Meeting, meeting_id)
         authorize(account, meeting, s, write=True)
 
@@ -124,7 +124,7 @@ def edit_artifact(
     body: dict,
     account: Account = Depends(get_current_account),
 ):
-    with get_session() as s:
+    with get_org_session(account.organization_id) as s:
         row, model, editable, org_id = _lookup(
             s, account, meeting_id, artifact_type, item_id, write=True
         )
@@ -165,7 +165,7 @@ def delete_artifact(
     item_id: int,
     account: Account = Depends(get_current_account),
 ):
-    with get_session() as s:
+    with get_org_session(account.organization_id) as s:
         row, _, _, org_id = _lookup(s, account, meeting_id, artifact_type, item_id, write=True)
         s.delete(row)
         # target encodes meeting_id: once the row is gone, item_id alone
@@ -213,7 +213,7 @@ def regenerate_artifact(
     if artifact_type not in _REGENERATABLE:
         raise HTTPException(404, f"unknown artifact type {artifact_type!r}")
     model, _ = _ARTIFACTS[artifact_type]
-    with get_session() as s:
+    with get_org_session(account.organization_id) as s:
         meeting = s.get(Meeting, meeting_id)
         authorize(account, meeting, s, write=True)
         # Delete before enqueueing: a failed re-run must leave the category

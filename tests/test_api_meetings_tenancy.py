@@ -128,3 +128,21 @@ def test_auditor_cannot_create_a_meeting():
     c = _client_as(email)
     r = c.post("/meetings", data={"title": "t"}, files={"file": ("a.wav", b"raw", "audio/wav")})
     assert r.status_code == 403
+
+
+def test_list_meetings_uses_the_org_scoped_session(monkeypatch):
+    calls = []
+    import meeting_mgr.api.meetings as mod
+
+    real = mod.get_readonly_org_session
+
+    def spy(org_id):
+        calls.append(org_id)
+        return real(org_id)
+
+    monkeypatch.setattr(mod, "get_readonly_org_session", spy)
+
+    org_id = _org()
+    _, email = _account(org_id)
+    _client_as(email).get("/meetings")
+    assert calls == [org_id]

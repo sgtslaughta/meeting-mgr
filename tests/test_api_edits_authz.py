@@ -223,3 +223,22 @@ def test_confirming_attribution_writes_an_audit_entry():
         assert "participant_name" not in entry.detail, (
             "audit detail must not carry the person's name, only an id reference"
         )
+
+
+def test_editing_an_artifact_uses_the_org_scoped_session(monkeypatch):
+    calls = []
+    import meeting_mgr.api.edits as mod
+
+    real = mod.get_org_session
+
+    def spy(org_id):
+        calls.append(org_id)
+        return real(org_id)
+
+    monkeypatch.setattr(mod, "get_org_session", spy)
+
+    org_id = _org()
+    member_id, email = _account(org_id)
+    mid, tid, _ = _meeting_with_topic(org_id, owner_id=member_id, visibility="private")
+    _client_as(email).patch(f"/meetings/{mid}/key_topics/{tid}", json={"title": "x"})
+    assert calls == [org_id]

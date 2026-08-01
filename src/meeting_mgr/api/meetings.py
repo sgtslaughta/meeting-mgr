@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from meeting_mgr.auth.deps import get_current_account
 from meeting_mgr.authz import authorize, readable_meetings_filter, require_role
-from meeting_mgr.db import get_readonly_session, get_session
+from meeting_mgr.db import get_org_session, get_readonly_org_session
 from meeting_mgr.models import (
     Account,
     ActionItem,
@@ -57,7 +57,7 @@ def create_meeting(
 ):
     require_role(account, frozenset({"admin", "member"}))
     ensure_bucket()
-    with get_session() as s:
+    with get_org_session(account.organization_id) as s:
         m = Meeting(
             organization_id=account.organization_id,
             owner_account_id=account.id,
@@ -80,7 +80,7 @@ def list_meetings(
     limit: int = 50,
     offset: int = 0,
 ):
-    with get_readonly_session() as s:
+    with get_readonly_org_session(account.organization_id) as s:
         q = (
             s.query(Meeting)
             .filter(Meeting.organization_id == account.organization_id)
@@ -102,7 +102,7 @@ def list_meetings(
 
 @router.get("/meetings/{meeting_id}")
 def read_meeting(meeting_id: int, account: Account = Depends(get_current_account)):
-    with get_readonly_session() as s:
+    with get_readonly_org_session(account.organization_id) as s:
         m = s.get(Meeting, meeting_id)
         authorize(account, m, s)
 
@@ -141,7 +141,7 @@ def read_meeting(meeting_id: int, account: Account = Depends(get_current_account
 
 @router.get("/meetings/{meeting_id}/events")
 def stream_events(meeting_id: int, account: Account = Depends(get_current_account)):
-    with get_readonly_session() as s:
+    with get_readonly_org_session(account.organization_id) as s:
         m = s.get(Meeting, meeting_id)
         authorize(account, m, s)
         snapshot = {
@@ -197,7 +197,7 @@ def _chunks(stream, size: int = 1 << 16):
 
 @router.get("/meetings/{meeting_id}/audio")
 def read_audio(meeting_id: int, request: Request, account: Account = Depends(get_current_account)):
-    with get_readonly_session() as s:
+    with get_readonly_org_session(account.organization_id) as s:
         m = s.get(Meeting, meeting_id)
         authorize(account, m, s)
         rec = s.query(Recording).filter_by(meeting_id=meeting_id).one_or_none()
