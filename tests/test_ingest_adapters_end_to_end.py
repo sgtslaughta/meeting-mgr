@@ -4,6 +4,8 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
+import pytest
+from botocore.exceptions import ClientError
 from fastapi.testclient import TestClient
 
 from meeting_mgr.api.main import app
@@ -92,20 +94,16 @@ def test_browser_capture_meeting_is_a_purge_candidate_like_any_other():
     assert [c.meeting_id for c in candidates] == [meeting_id]
 
 
-def test_purge_of_a_capture_meeting_deletes_the_row_but_leaks_the_chunks_KNOWN_GAP():
-    """Documents a known Phase 4/5 interaction, out of scope for this task
-    (see Task 10's review and the Task 13 brief): purge.py's
-    _purge_audio_objects() passes rec.raw_key straight to delete_object().
-    For a browser-capture Meeting, raw_key is "manifest:raw/{id}/manifest.json"
-    -- not a real object key -- so delete_object() is a silent no-op and the
-    manifest object plus every chunk survive a "purge". The Meeting/Recording
-    *rows* are still correctly deleted; only the bytes leak.
+def test_purge_of_a_capture_meeting_deletes_the_row_and_the_manifest_and_chunks():
+    """Was test_..._KNOWN_GAP: purge.py's _purge_audio_objects() used to pass
+    rec.raw_key straight to delete_object(). For a browser-capture Meeting,
+    raw_key is "manifest:raw/{id}/manifest.json" -- not a real object key --
+    so delete_object() was a silent no-op and the manifest object plus every
+    chunk survived a "purge", even though the Meeting/Recording rows were
+    correctly deleted.
 
-    This test pins the CURRENT (wrong) behaviour deliberately, so it is not
-    silently fixed as a side effect of unrelated work. When purge.py is
-    corrected to reconstruct chunk keys from the manifest before deleting,
-    this test should be updated to assert the objects ARE gone -- flip the
-    final two assertions rather than deleting this test outright.
+    purge.py now reads the manifest before deleting it and deletes every
+    chunk it lists, then the manifest itself, so all the bytes are gone too.
     """
     org_id = _org()
     admin_email, _ = _admin(org_id)
@@ -131,6 +129,8 @@ def test_purge_of_a_capture_meeting_deletes_the_row_but_leaks_the_chunks_KNOWN_G
         assert s.query(Recording).filter_by(meeting_id=meeting_id).count() == 0, (
             "the Recording row is correctly deleted"
         )
-    # The bytes, however, are NOT deleted -- this is the leak.
-    assert get_object(manifest_key) is not None
-    assert get_object(chunk_key) == b"x"
+    # The bytes are gone too -- no leaked manifest, no leaked chunk.
+    with pytest.raises(ClientError):
+        get_object(manifest_key)
+    with pytest.raises(ClientError):
+        get_object(chunk_key)
