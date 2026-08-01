@@ -29,7 +29,21 @@ class BotCredential(Base):
 class BotSession(Base):
     """One bot-initiated recording session -- created in Task 5, defined here
     alongside BotCredential so models/__init__.py has a single import site
-    for both. See Task 5 for field-by-field rationale."""
+    for both. See Task 5 for field-by-field rationale.
+
+    TENANCY IS NOT ENFORCED BY THE SCHEMA. organization_id is the column the
+    RLS policy filters on, but nothing checks it agrees with the organization
+    of bot_credential_id or meeting_id -- a CHECK constraint cannot span
+    tables. This was verified live: as meeting_app with app.org_id set to one
+    org, a row claiming that organization_id while both FKs pointed at another
+    org's rows was accepted.
+
+    The invariant holds only because api/bot.py derives organization_id from
+    the authenticated credential and creates the Meeting itself, so no caller
+    ever supplies either FK id. Any future code path that accepts a
+    caller-supplied meeting_id or bot_credential_id must re-establish it in
+    application code. Same gap exists on BotCredential and WatchFolder -- it
+    is the repo's organization_id-direct pattern, not an oversight here."""
 
     __tablename__ = "bot_session"
 

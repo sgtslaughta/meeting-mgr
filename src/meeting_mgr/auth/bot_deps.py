@@ -29,6 +29,14 @@ from meeting_mgr.auth.password import hash_password, verify_password
 from meeting_mgr.db import get_readonly_session
 from meeting_mgr.models import BotCredential
 
+# Deliberately a single shared, immutable instance rather than a fresh
+# exception per rejection. Every rejection path raises THIS object, so the
+# status, detail and headers are identical by construction rather than by
+# convention -- equalising the PBKDF2 work is pointless if the response
+# still distinguishes "unknown id" from "wrong secret". Never attach
+# per-request state to it, and never build a variant with a different
+# detail: that reintroduces the enumeration oracle at the application
+# layer, where it is cheaper to exploit than the timing one.
 _UNAUTHORIZED = HTTPException(401, "invalid bot credential")
 
 # Fixed, valid-format hash with no known plaintext. Stood in for a missing
