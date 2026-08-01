@@ -1,5 +1,6 @@
 from meeting_mgr.models.account import ROLES, Account
 from meeting_mgr.models.audit import AuditLogEntry
+from meeting_mgr.models.ingest import WatchFolder
 from meeting_mgr.models.meeting import (
     Meeting,
     MeetingShare,
@@ -28,4 +29,5 @@ __all__ = [
     "ActionItem",
     "DecisionPoint",
     "RetentionPolicy",
+    "WatchFolder",
 ]
