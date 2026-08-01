@@ -1,4 +1,5 @@
 import io
+import json
 import uuid
 
 from fastapi.testclient import TestClient
@@ -192,3 +193,172 @@ def test_upload_chunk_streams_without_reading_whole_file(monkeypatch):
     assert captured["is_bytes"] is False
     assert captured["key"] == f"raw/{meeting_id}/chunks/000000.webm"
     assert storage.get_object(captured["key"]) == b"AUDIO-BYTES"
+
+
+def test_finish_with_no_chunks_is_rejected():
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 422
+
+
+def test_finish_builds_a_manifest_and_enqueues_the_pipeline(monkeypatch):
+    from meeting_mgr.api import capture
+
+    enqueued = []
+    monkeypatch.setattr(capture, "run_pipeline", lambda meeting_id: enqueued.append(meeting_id))
+
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    for seq in (0, 1):
+        c.put(
+            f"/meetings/{meeting_id}/capture/chunks/{seq}",
+            files={"chunk": (f"c{seq}.webm", io.BytesIO(b"x"), "audio/webm")},
+        )
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"
+
+    with get_session() as s:
+        from meeting_mgr.models import Recording
+
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        assert rec.raw_key.startswith("manifest:")
+        assert s.get(Meeting, meeting_id).status == "pending"
+    assert enqueued == [meeting_id]
+
+
+def test_finish_twice_is_rejected_with_409():
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+    assert c.post(f"/meetings/{meeting_id}/capture/finish").status_code == 200
+    assert c.post(f"/meetings/{meeting_id}/capture/finish").status_code == 409
+
+
+def test_chunk_upload_after_finish_is_rejected_with_409():
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+    c.post(f"/meetings/{meeting_id}/capture/finish")
+
+    r = c.put(
+        f"/meetings/{meeting_id}/capture/chunks/1",
+        files={"chunk": ("c.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+    assert r.status_code == 409
+
+
+def test_finish_orders_the_manifest_numerically_not_lexicographically():
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    for seq in range(11):
+        r = c.put(
+            f"/meetings/{meeting_id}/capture/chunks/{seq}",
+            files={"chunk": (f"c{seq}.webm", io.BytesIO(bytes([seq])), "audio/webm")},
+        )
+        assert r.status_code == 200
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+
+    with get_session() as s:
+        from meeting_mgr.models import Recording
+
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        manifest_key = rec.raw_key.removeprefix("manifest:")
+
+    from meeting_mgr import storage
+
+    keys = json.loads(storage.get_object(manifest_key))
+    seqs = [int(k.removeprefix(f"raw/{meeting_id}/chunks/").removesuffix(".webm")) for k in keys]
+    assert seqs == list(range(11))
+
+
+def test_finish_accepts_a_gap_in_the_sequence():
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    for seq in (1, 2, 4):
+        r = c.put(
+            f"/meetings/{meeting_id}/capture/chunks/{seq}",
+            files={"chunk": (f"c{seq}.webm", io.BytesIO(b"x"), "audio/webm")},
+        )
+        assert r.status_code == 200
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+
+    with get_session() as s:
+        from meeting_mgr.models import Recording
+
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        manifest_key = rec.raw_key.removeprefix("manifest:")
+
+    from meeting_mgr import storage
+
+    keys = json.loads(storage.get_object(manifest_key))
+    seqs = [int(k.removeprefix(f"raw/{meeting_id}/chunks/").removesuffix(".webm")) for k in keys]
+    assert seqs == [1, 2, 4]
+
+
+def test_finish_requires_authentication():
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+
+    r = TestClient(app).post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 401
+
+
+def test_auditor_cannot_finish_a_capture():
+    org_id = _org()
+    member_email = _account(org_id, role="member")
+    auditor_email = _account(org_id, role="auditor")
+    c = _client_as(member_email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+
+    r = _client_as(auditor_email).post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 403
+
+
+def test_finish_from_another_organization_is_not_found():
+    org_a, org_b = _org(), _org()
+    email_a = _account(org_a, role="member")
+    email_b = _account(org_b, role="member")
+    c = _client_as(email_a)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+
+    r = _client_as(email_b).post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 404
