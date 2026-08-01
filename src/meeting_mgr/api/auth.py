@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
+from meeting_mgr.auth.deps import get_current_account
 from meeting_mgr.auth.password import hash_password, verify_password
 from meeting_mgr.db import get_readonly_session
 from meeting_mgr.models import Account
@@ -53,3 +54,8 @@ def login(body: LoginIn, request: Request):
 def logout(request: Request):
     request.session.clear()
     return Response(status_code=204)
+
+
+@router.get("/me")
+def me(account: Account = Depends(get_current_account)):
+    return _view(account)

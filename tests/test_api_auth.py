@@ -110,9 +110,8 @@ def test_logout_clears_the_session():
     # cookie with value "null" and an expiry in the past; httpx's cookie
     # jar (used by TestClient) honors that expiry and drops the cookie
     # entirely, so the client-visible effect is that "session" disappears.
-    # GET /auth/me does not exist until Task 7 — strengthen this to a
-    # GET /auth/me -> 401 check once it does.
     assert post_logout_cookie is None
+    assert c.get("/auth/me").status_code == 401
 
 
 def test_unknown_email_still_pays_the_full_password_verification_cost(monkeypatch):
