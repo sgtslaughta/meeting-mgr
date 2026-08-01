@@ -160,3 +160,19 @@ def test_zero_retention_purges_everything_eligible():
         candidates = select_purge_candidates(s, org_id, now=NOW)
     assert [c.meeting_id for c in candidates] == [meeting_id]
     assert candidates[0].kind == "full"
+
+
+def test_a_meeting_with_raw_key_nulled_is_no_longer_an_audio_candidate():
+    """Simulates the post-Task-8 state: raw_key already nulled by a prior
+    audio purge. The audio branch's `Recording.raw_key.isnot(None)` filter
+    is the only thing standing between that and reselecting the same
+    Meeting on every sweep forever, so this pins it at this layer, not
+    just at the migration."""
+    org_id = _org()
+    meeting_id = _meeting(org_id, age_days=100)
+    with get_session() as s:
+        recording = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        recording.raw_key = None
+        upsert_policy(s, org_id, audio_retention_days=10, meeting_retention_days=None)
+        candidates = select_purge_candidates(s, org_id, now=NOW)
+    assert candidates == []

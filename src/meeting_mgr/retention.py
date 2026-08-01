@@ -149,6 +149,13 @@ def select_purge_candidates(
             s.query(Meeting)
             .join(Recording, Recording.meeting_id == Meeting.id)
             .filter(Meeting.organization_id == org_id, Meeting.created_at <= cutoff)
+            # Task 8 (the real purge) is the sole writer that sets raw_key
+            # NULL once it has deleted the storage object for a Meeting's
+            # audio. This filter is what keeps an already-purged Meeting
+            # from being reselected as an audio candidate forever -- the
+            # two must agree: if Task 8 stops nulling raw_key on success,
+            # this filter goes inert again (see migration
+            # d17fb00cb81a_recording_raw_key_nullable).
             .filter(Recording.raw_key.isnot(None))
         )
         if full_ids:
