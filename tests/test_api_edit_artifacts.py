@@ -1,28 +1,50 @@
+import uuid
+
 from fastapi.testclient import TestClient
 
 from meeting_mgr.api import edits
 from meeting_mgr.api.main import app
+from meeting_mgr.auth.password import hash_password
 from meeting_mgr.db import get_session
-from meeting_mgr.models import DecisionPoint, KeyTopic, Meeting, Organization
+from meeting_mgr.models import Account, DecisionPoint, KeyTopic, Meeting, Organization
 
 
-def _meeting_with_topic() -> tuple[int, int]:
+def _client_as(email: str, password: str = "pw") -> TestClient:
+    c = TestClient(app)
+    assert c.post("/auth/login", json={"email": email, "password": password}).status_code == 200
+    return c
+
+
+def _meeting_with_topic() -> tuple[int, int, TestClient]:
+    org = Organization(name=f"org-{uuid.uuid4()}")
     with get_session() as s:
-        org = s.query(Organization).filter_by(name="default").one()
-        m = Meeting(organization_id=org.id, title="t", status="published")
+        s.add(org)
+        s.flush()
+        email = f"member-{uuid.uuid4()}@x.com"
+        owner = Account(
+            organization_id=org.id, email=email, role="member", password_hash=hash_password("pw")
+        )
+        s.add(owner)
+        s.flush()
+        m = Meeting(
+            organization_id=org.id,
+            title="t",
+            status="published",
+            owner_account_id=owner.id,
+            visibility="organization",
+        )
         s.add(m)
         s.flush()
         t = KeyTopic(meeting_id=m.id, title="budget", citations=[1], provenance="inferred")
         s.add(t)
         s.flush()
-        return m.id, t.id
+        mid, tid = m.id, t.id
+    return mid, tid, _client_as(email)
 
 
 def test_editing_promotes_provenance_to_confirmed():
-    mid, tid = _meeting_with_topic()
-    r = TestClient(app).patch(
-        f"/meetings/{mid}/key_topics/{tid}", json={"title": "budget and hiring"}
-    )
+    mid, tid, client = _meeting_with_topic()
+    r = client.patch(f"/meetings/{mid}/key_topics/{tid}", json={"title": "budget and hiring"})
     assert r.status_code == 200
     assert r.json()["title"] == "budget and hiring"
     assert r.json()["provenance"] == "confirmed"
@@ -31,8 +53,8 @@ def test_editing_promotes_provenance_to_confirmed():
 
 
 def test_editing_leaves_citations_untouched():
-    mid, tid = _meeting_with_topic()
-    TestClient(app).patch(f"/meetings/{mid}/key_topics/{tid}", json={"title": "renamed"})
+    mid, tid, client = _meeting_with_topic()
+    client.patch(f"/meetings/{mid}/key_topics/{tid}", json={"title": "renamed"})
     with get_session() as s:
         assert s.get(KeyTopic, tid).citations == [1], (
             "a human rewording a claim does not change which segments it came from"
@@ -40,29 +62,29 @@ def test_editing_leaves_citations_untouched():
 
 
 def test_unknown_field_is_rejected():
-    mid, tid = _meeting_with_topic()
-    r = TestClient(app).patch(
+    mid, tid, client = _meeting_with_topic()
+    r = client.patch(
         f"/meetings/{mid}/key_topics/{tid}", json={"provenance": "confirmed", "title": "x"}
     )
     assert r.status_code == 400, "provenance is not client-writable"
 
 
 def test_item_from_another_meeting_is_404():
-    mid_a, _ = _meeting_with_topic()
-    _, tid_b = _meeting_with_topic()
-    r = TestClient(app).patch(f"/meetings/{mid_a}/key_topics/{tid_b}", json={"title": "x"})
+    mid_a, _, client = _meeting_with_topic()
+    _, tid_b, _ = _meeting_with_topic()
+    r = client.patch(f"/meetings/{mid_a}/key_topics/{tid_b}", json={"title": "x"})
     assert r.status_code == 404
 
 
 def test_delete_removes_the_item():
-    mid, tid = _meeting_with_topic()
-    assert TestClient(app).delete(f"/meetings/{mid}/key_topics/{tid}").status_code == 204
+    mid, tid, client = _meeting_with_topic()
+    assert client.delete(f"/meetings/{mid}/key_topics/{tid}").status_code == 204
     with get_session() as s:
         assert s.get(KeyTopic, tid) is None
 
 
 def test_regenerate_replaces_only_that_artifact_type(monkeypatch):
-    mid, tid = _meeting_with_topic()
+    mid, tid, client = _meeting_with_topic()
     with get_session() as s:
         s.add(
             DecisionPoint(
@@ -85,7 +107,7 @@ def test_regenerate_replaces_only_that_artifact_type(monkeypatch):
 
     monkeypatch.setattr("meeting_mgr.api.edits.extract_key_topics", fake_extract)
 
-    r = TestClient(app).post(f"/meetings/{mid}/regenerate/key_topics")
+    r = client.post(f"/meetings/{mid}/regenerate/key_topics")
     assert r.status_code == 202
     with get_session() as s:
         topics = s.query(KeyTopic).filter_by(meeting_id=mid).all()
@@ -103,11 +125,11 @@ def test_regenerate_dispatches_via_celery_delay_not_inline(monkeypatch):
     assertion holds regardless of eager mode, and fails if the endpoint ever
     calls `_run_extraction` directly instead of going through Celery.
     """
-    mid, _ = _meeting_with_topic()
+    mid, _, client = _meeting_with_topic()
     calls = []
     monkeypatch.setattr(edits._regenerate_task, "delay", lambda *a, **kw: calls.append((a, kw)))
 
-    r = TestClient(app).post(f"/meetings/{mid}/regenerate/key_topics")
+    r = client.post(f"/meetings/{mid}/regenerate/key_topics")
 
     assert r.status_code == 202
     assert calls == [((mid, "key_topics"), {})], (
