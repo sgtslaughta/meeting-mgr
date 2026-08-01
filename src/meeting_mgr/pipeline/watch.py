@@ -19,7 +19,7 @@ import os
 import time
 from datetime import datetime
 
-from meeting_mgr.db import get_org_session
+from meeting_mgr.db import get_org_session, get_readonly_session
 from meeting_mgr.models import Meeting, Recording, WatchFolder
 from meeting_mgr.pipeline.app import celery_app
 from meeting_mgr.pipeline.watch_config import (
@@ -229,3 +229,43 @@ def scan_watch_folder(watch_folder_id: int, organization_id: int) -> None:
         row = s.get(WatchFolder, watch_folder_id)
         row.last_scan_at = datetime.utcnow()
         row.last_scan_error = "; ".join(errors) if errors else None
+
+
+@celery_app.task(name="meeting_mgr.scan_watch_folders")
+def scan_watch_folders() -> None:
+    """Celery-beat entry point: find every enabled WatchFolder across every
+    organization and dispatch its scan as a separate task. Same untenanted
+    exception Phase 4's sweep_retention used (pipeline/purge.py) --
+    get_readonly_session() here reads only the watch_folder config index
+    (id, organization_id, enabled) to decide which folders to schedule; it
+    never reads Meeting content and deletes nothing. The real filesystem
+    walk and every Meeting/Recording write happens in scan_watch_folder(),
+    org-scoped via get_org_session(organization_id) -- see its docstring
+    above.
+
+    Dispatches with .delay() rather than calling scan_watch_folder inline:
+    the whole point of a scheduler is that the scan work runs in a worker,
+    not in the beat process itself.
+
+    One folder failing to dispatch must not stop the sweep -- same
+    isolation-plus-logging discipline as sweep_retention's per-organization
+    loop. The failure is logged (with watch_folder_id) before the loop
+    continues, so a folder that fails every scan is visible to an operator
+    instead of silently stuck."""
+    with get_readonly_session() as s:
+        rows = s.query(WatchFolder.id, WatchFolder.organization_id).filter_by(enabled=True).all()
+    for watch_folder_id, organization_id in rows:
+        try:
+            scan_watch_folder.delay(watch_folder_id, organization_id)
+        except Exception:
+            # Swallowed on purpose -- one folder failing to dispatch must
+            # not withhold the rest of the sweep. Logged so a folder that
+            # fails every scan is visible to an operator instead of
+            # silently never getting scanned.
+            logger.exception(
+                "scan_watch_folders: failed to dispatch scan for "
+                "watch_folder_id=%s organization_id=%s",
+                watch_folder_id,
+                organization_id,
+            )
+            continue
