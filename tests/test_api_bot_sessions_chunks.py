@@ -207,3 +207,58 @@ def test_a_chunk_upload_after_finish_is_rejected(monkeypatch):
         files={"chunk": ("c.bin", io.BytesIO(b"x"), "application/octet-stream")},
     )
     assert r.status_code == 409
+
+
+def test_finish_toctou_a_straggler_upload_after_the_status_flip_is_rejected_not_orphaned(
+    monkeypatch,
+):
+    """bot.py equivalent of test_api_capture.py's finish-race test -- see
+    that one for the full rationale. The hook fires between finish_session's
+    status flip and its list_keys() snapshot, and issues a real chunk PUT
+    through the same authenticated bot credential.
+
+    Kill: reverting finish_session to flip `m.status = "pending"` only at
+    the end (its pre-fix position) makes the straggler's recheck read
+    "capturing" again -- its PUT succeeds (200) while the manifest snapshot
+    already excluded it, which the assertion below forbids and the final
+    assert (409) directly contradicts.
+    """
+    import meeting_mgr.api.bot as bot_module
+
+    monkeypatch.setattr(bot_module, "run_pipeline", lambda meeting_id: None)
+    c, headers, session_id, meeting_id = _client_and_session()
+    c.put(
+        f"/bot/sessions/{session_id}/chunks/0",
+        headers=headers,
+        files={"chunk": ("c0.bin", io.BytesIO(b"x"), "application/octet-stream")},
+    )
+
+    result = {}
+
+    def race(mid):
+        r = c.put(
+            f"/bot/sessions/{session_id}/chunks/1",
+            headers=headers,
+            files={"chunk": ("c1.bin", io.BytesIO(b"y"), "application/octet-stream")},
+        )
+        result["status"] = r.status_code
+
+    monkeypatch.setattr(bot_module, "_finish_race_hook", race)
+
+    r = c.post(f"/bot/sessions/{session_id}/finish", headers=headers)
+    assert r.status_code == 200
+
+    from meeting_mgr.models import Recording
+
+    with get_session() as s:
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        manifest_key = rec.raw_key.removeprefix("manifest:")
+
+    import json
+
+    keys = json.loads(get_object(manifest_key))
+    straggler_key = bot_module._bot_chunk_key(meeting_id, 1)
+    straggler_included = straggler_key in keys
+
+    assert not (result["status"] == 200 and not straggler_included)
+    assert result["status"] == 409

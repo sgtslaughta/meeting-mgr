@@ -156,6 +156,14 @@ def run_pipeline(meeting_id: int) -> None:
     task.delay(meeting_id)
 
 
+def _finish_race_hook(meeting_id: int) -> None:
+    """No-op in production. Runs after finish_session's status flip commits
+    but before it takes the list_keys() snapshot -- tests monkeypatch this
+    to simulate a straggler chunk upload landing in that window. Mirrors
+    api/capture.py::_finish_race_hook exactly; see its finish_capture for
+    the full TOCTOU ordering rationale."""
+
+
 @router.post("/sessions/{session_id}/finish")
 def finish_session(session_id: int, credential: BotCredential = Depends(get_bot_credential)):
     with get_org_session(credential.organization_id) as s:
@@ -166,15 +174,30 @@ def finish_session(session_id: int, credential: BotCredential = Depends(get_bot_
             # Meeting has already left "capturing" for. The sweep
             # (pipeline/bot.py) only ever touches Meetings still in
             # "capturing", so a legitimately finished Meeting (status now
-            # "pending" or "failed") can never be raced by it afterwards.
+            # "pending", "finishing", or "failed") can never be raced by it
+            # afterwards.
             raise HTTPException(409, "session is not in a capturing state")
         meeting_id = m.id
-        prefix = _bot_chunk_prefix(meeting_id)
-        # Ordered on the parsed integer sequence, never lexically -- "10"
-        # sorts before "9" as a string, which would silently scramble chunk
-        # order past ten chunks. Same reasoning as capture.py's finish.
-        keys = sorted(list_keys(prefix), key=lambda k: _bot_chunk_seq(prefix, k))
+        # TOCTOU fix: flip status FIRST, committed in this transaction
+        # alone, before taking the list_keys() snapshot below -- see
+        # api/capture.py::finish_capture for the full ordering-guarantee /
+        # residual-window rationale, which applies here unchanged. In short:
+        # this closes the window for any upload_chunk whose OWN status
+        # recheck begins after this commit (it now sees "finishing" and is
+        # rejected with 409 before writing to S3), but does NOT close the
+        # window for a straggler whose recheck already committed
+        # "capturing" moments earlier and is still completing its
+        # put_stream() when the snapshot below runs.
+        m.status = "finishing"
+    _finish_race_hook(meeting_id)
+    prefix = _bot_chunk_prefix(meeting_id)
+    # Ordered on the parsed integer sequence, never lexically -- "10"
+    # sorts before "9" as a string, which would silently scramble chunk
+    # order past ten chunks. Same reasoning as capture.py's finish.
+    keys = sorted(list_keys(prefix), key=lambda k: _bot_chunk_seq(prefix, k))
 
+    with get_org_session(credential.organization_id) as s:
+        m = s.get(Meeting, meeting_id)
         if not keys:
             # No pipeline run to enqueue -- there is nothing to process --
             # and this is not a 4xx: the bot process is not a human who

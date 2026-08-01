@@ -94,6 +94,13 @@ def list_chunks(meeting_id: int, account: Account = Depends(get_current_account)
     return {"seqs": seqs}
 
 
+def _finish_race_hook(meeting_id: int) -> None:
+    """No-op in production. Runs after finish_capture's status flip commits
+    but before it takes the list_keys() snapshot -- tests monkeypatch this
+    to simulate a straggler chunk upload landing in that window. See
+    test_finish_toctou_* in test_api_capture.py."""
+
+
 @router.post("/meetings/{meeting_id}/capture/finish")
 def finish_capture(meeting_id: int, account: Account = Depends(get_current_account)):
     with get_org_session(account.organization_id) as s:
@@ -101,28 +108,65 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
         authorize(account, m, s, write=True)
         if m.status != "capturing":
             raise HTTPException(409, "meeting is not in capture state")
-        prefix = _chunk_prefix(meeting_id)
-        # Ordered numerically by sequence number, not by the lexicographic
-        # order list_keys() returns. Chunk keys happen to be zero-padded to
-        # 6 digits (_chunk_key), so string order matches numeric order today
-        # -- but sorting on the parsed seq is what actually guarantees it,
-        # rather than depending on that formatting choice staying fixed.
-        keys = sorted(list_keys(prefix), key=lambda k: _chunk_seq(prefix, k))
+        # TOCTOU fix: flip status FIRST, committed in this transaction alone,
+        # before taking the list_keys() snapshot below. Previously the
+        # status write was the LAST thing this function did (after building
+        # and uploading the manifest), so a concurrent upload_chunk's own
+        # status recheck kept reading "capturing" -- and was allowed to
+        # put_stream() straight to storage -- for the entire duration this
+        # function spent snapshotting and building the manifest. Committing
+        # the flip here, first, means any upload_chunk whose OWN status
+        # recheck begins after this commit sees "finishing" (not
+        # "capturing") and is rejected with 409 before it ever writes to S3.
+        # That is the ordering guarantee this closes.
+        #
+        # Residual window (NOT closed, stated honestly): an upload_chunk
+        # request whose status recheck already committed and read
+        # "capturing" a moment before this commit lands is already past its
+        # check -- it is free to complete its put_stream() (a plain S3 call
+        # with no DB transaction around it, see upload_chunk) at any point
+        # afterward, including after the list_keys() snapshot below. That
+        # chunk is still written to storage but silently excluded from the
+        # manifest. This narrows the vulnerable window from "the entire body
+        # of finish_capture" down to "one already-in-flight straggler's
+        # remaining put_stream() latency" -- it does not eliminate it.
+        m.status = "finishing"
+    _finish_race_hook(meeting_id)
+    prefix = _chunk_prefix(meeting_id)
+    # Ordered numerically by sequence number, not by the lexicographic
+    # order list_keys() returns. Chunk keys happen to be zero-padded to
+    # 6 digits (_chunk_key), so string order matches numeric order today
+    # -- but sorting on the parsed seq is what actually guarantees it,
+    # rather than depending on that formatting choice staying fixed.
+    keys = sorted(list_keys(prefix), key=lambda k: _chunk_seq(prefix, k))
+
+    empty = False
+    with get_org_session(account.organization_id) as s:
+        m = s.get(Meeting, meeting_id)
         if not keys:
-            # An empty capture (finish with zero chunks uploaded) is rejected
-            # outright rather than enqueuing a pipeline run that would fail
+            # An empty capture (finish with zero chunks uploaded, or none
+            # landed even after the status flip above) is rejected outright
+            # rather than enqueuing a pipeline run that would fail
             # confusingly downstream trying to normalize an empty manifest.
-            raise HTTPException(422, "no chunks were uploaded")
-        # A gap in the sequence (e.g. chunks 1, 2, 4 exist) is NOT treated as
-        # an error here: the client-supplied seq gives no way to distinguish
-        # "chunk 3 was dropped" from "chunk 3 was never recorded" (silence
-        # detection, a paused capture, etc). This manifest is built on client
-        # discipline, not a content-addressed/counted guarantee (see
-        # upload_chunk's docstring), so a gap is accepted as a lossy capture:
-        # whatever chunks exist, in order, go in the manifest.
-        manifest_key = f"raw/{meeting_id}/manifest.json"
-        put_object(manifest_key, json.dumps(keys).encode())
-        s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))
-        m.status = "pending"
+            # Revert to "capturing" so the client can retry (upload a chunk
+            # it was still holding, then call finish again) -- same
+            # recoverable shape the pre-fix 422 behavior had.
+            m.status = "capturing"
+            empty = True
+        else:
+            # A gap in the sequence (e.g. chunks 1, 2, 4 exist) is NOT
+            # treated as an error here: the client-supplied seq gives no way
+            # to distinguish "chunk 3 was dropped" from "chunk 3 was never
+            # recorded" (silence detection, a paused capture, etc). This
+            # manifest is built on client discipline, not a
+            # content-addressed/counted guarantee (see upload_chunk's
+            # docstring), so a gap is accepted as a lossy capture: whatever
+            # chunks exist, in order, go in the manifest.
+            manifest_key = f"raw/{meeting_id}/manifest.json"
+            put_object(manifest_key, json.dumps(keys).encode())
+            s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))
+            m.status = "pending"
+    if empty:
+        raise HTTPException(422, "no chunks were uploaded")
     run_pipeline(meeting_id)
     return {"meeting_id": meeting_id, "status": "pending"}

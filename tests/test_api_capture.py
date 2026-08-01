@@ -362,3 +362,94 @@ def test_finish_from_another_organization_is_not_found():
 
     r = _client_as(email_b).post(f"/meetings/{meeting_id}/capture/finish")
     assert r.status_code == 404
+
+
+def test_finish_toctou_a_straggler_upload_after_the_status_flip_is_rejected_not_orphaned(
+    monkeypatch,
+):
+    """Simulates the interleaving pass 1 flagged: a chunk upload racing
+    finish_capture(). The hook fires exactly between finish_capture's status
+    flip and its list_keys() snapshot, and issues a real chunk PUT through
+    the same authenticated client -- i.e. a straggler whose own status
+    recheck is happening right now, concurrently with finish.
+
+    Kill: this pins the fix's actual mechanism, not just its outcome. Revert
+    finish_capture to flip `m.status = "pending"` only at the end (after
+    building/uploading the manifest), as it did before this fix -- putting
+    the flip back where it was -- and the straggler's status recheck reads
+    "capturing" again, so its PUT succeeds (200) while the manifest snapshot
+    (taken moments earlier) already excluded it: straggler_status == 200
+    with the chunk missing from the manifest, which the assertion below
+    forbids and the final assert (409) directly contradicts.
+    """
+    from meeting_mgr.api import capture
+
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c0.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+
+    result = {}
+
+    def race(mid):
+        r = c.put(
+            f"/meetings/{mid}/capture/chunks/1",
+            files={"chunk": ("c1.webm", io.BytesIO(b"y"), "audio/webm")},
+        )
+        result["status"] = r.status_code
+
+    monkeypatch.setattr(capture, "_finish_race_hook", race)
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+
+    with get_session() as s:
+        from meeting_mgr.models import Recording
+
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        manifest_key = rec.raw_key.removeprefix("manifest:")
+    from meeting_mgr import storage
+
+    keys = json.loads(storage.get_object(manifest_key))
+    straggler_key = capture._chunk_key(meeting_id, 1)
+    straggler_included = straggler_key in keys
+
+    # The invariant the fix establishes: a straggler that lands in this
+    # window is either rejected outright (409, nothing orphaned) or, if
+    # ever accepted, must be present in the manifest -- never both accepted
+    # and silently excluded (the data-loss shape pass 1 found).
+    assert not (result["status"] == 200 and not straggler_included)
+    # The actual mechanism: the flip already committed, so the straggler's
+    # own status recheck is rejected before it ever writes to S3.
+    assert result["status"] == 409
+
+
+def test_finish_reverts_to_capturing_when_no_chunks_survive_the_flip():
+    """The empty-manifest 422 path (test_finish_with_no_chunks_is_rejected)
+    must leave the Meeting resumable, not stuck in the intermediate
+    "finishing" status the TOCTOU fix introduces.
+
+    Kill: dropping the `m.status = "capturing"` revert (leaving the Meeting
+    at "finishing" on the empty path) turns this red.
+    """
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 422
+
+    with get_session() as s:
+        assert s.get(Meeting, meeting_id).status == "capturing"
+
+    # And proves it's actually resumable, not just cosmetically reverted.
+    r = c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c0.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+    assert r.status_code == 200
