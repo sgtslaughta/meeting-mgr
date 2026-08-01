@@ -59,13 +59,16 @@ def confirm_attribution(
         participant_id = resolve_participant(s, org_id, body.participant_name)
         # detail carries only the resolved participant id (an entity
         # reference, same shape as a foreign key), never the name itself:
-        # the name is the content of the change, not its shape.
+        # the name is the content of the change, not its shape. target
+        # encodes meeting_id so an entry outlives the row it touched — a
+        # deleted/regenerated artifact leaves no other trace of which
+        # meeting it belonged to.
         record_audit(
             s,
             organization_id=org_id,
             actor_account_id=account.id,
             action="cluster.attribute",
-            target=f"cluster:{cluster_id}",
+            target=f"meeting:{meeting_id}:cluster:{cluster_id}",
             detail={"participant_id": participant_id},
         )
 
@@ -140,13 +143,14 @@ def edit_artifact(
                 setattr(row, field, value)
         confirm(row)
         s.flush()
-        # detail names only which fields changed, never their values.
+        # detail names only which fields changed, never their values. target
+        # encodes meeting_id: see the note in confirm_attribution.
         record_audit(
             s,
             organization_id=org_id,
             actor_account_id=account.id,
             action="artifact.edit",
-            target=f"{artifact_type}:{item_id}",
+            target=f"meeting:{meeting_id}:{artifact_type}:{item_id}",
             detail={"fields": sorted(body)},
         )
         # Same allowlist the read endpoint uses — a PATCH response must not
@@ -164,12 +168,14 @@ def delete_artifact(
     with get_session() as s:
         row, _, _, org_id = _lookup(s, account, meeting_id, artifact_type, item_id, write=True)
         s.delete(row)
+        # target encodes meeting_id: once the row is gone, item_id alone
+        # resolves to nothing — nothing else records which meeting it was.
         record_audit(
             s,
             organization_id=org_id,
             actor_account_id=account.id,
             action="artifact.delete",
-            target=f"{artifact_type}:{item_id}",
+            target=f"meeting:{meeting_id}:{artifact_type}:{item_id}",
         )
     return Response(status_code=204)
 
@@ -213,12 +219,15 @@ def regenerate_artifact(
         # Delete before enqueueing: a failed re-run must leave the category
         # empty, not stale-but-plausible for a human to mistake as fresh.
         s.query(model).filter_by(meeting_id=meeting_id).delete()
+        # target encodes meeting_id: this wipes an entire artifact category
+        # for one meeting, and "someone regenerated key_topics" with no
+        # meeting is not an answerable audit trail.
         record_audit(
             s,
             organization_id=meeting.organization_id,
             actor_account_id=account.id,
             action="artifact.regenerate",
-            target=artifact_type,
+            target=f"meeting:{meeting_id}:{artifact_type}",
         )
     _regenerate_task.delay(meeting_id, artifact_type)
     return {"regenerated": artifact_type}

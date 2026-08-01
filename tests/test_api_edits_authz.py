@@ -111,7 +111,7 @@ def test_a_member_editing_their_own_meeting_writes_an_audit_entry():
             s.query(AuditLogEntry).filter_by(organization_id=org_id, action="artifact.edit").one()
         )
         assert entry.actor_account_id == member_id
-        assert entry.target == f"key_topics:{tid}"
+        assert entry.target == f"meeting:{mid}:key_topics:{tid}"
 
 
 def test_confirming_attribution_on_another_orgs_cluster_is_404():
@@ -168,7 +168,7 @@ def test_regenerating_another_orgs_artifact_is_404():
     assert r.status_code == 404
 
 
-def test_deleting_an_artifact_writes_an_audit_entry():
+def test_deleting_an_artifact_writes_an_audit_entry_that_identifies_the_meeting():
     org_id = _org()
     member_id, email = _account(org_id)
     mid, tid, _ = _meeting_with_topic(org_id, owner_id=member_id, visibility="private")
@@ -179,10 +179,13 @@ def test_deleting_an_artifact_writes_an_audit_entry():
             s.query(AuditLogEntry).filter_by(organization_id=org_id, action="artifact.delete").one()
         )
         assert entry.actor_account_id == member_id
-        assert entry.target == f"key_topics:{tid}"
+        # The row is gone by now — target is the ONLY place meeting_id
+        # survives for this entry, so a deleted artifact's audit trail
+        # still says which meeting it belonged to.
+        assert entry.target == f"meeting:{mid}:key_topics:{tid}"
 
 
-def test_regenerating_an_artifact_writes_an_audit_entry(monkeypatch):
+def test_regenerating_an_artifact_writes_an_audit_entry_that_identifies_the_meeting(monkeypatch):
     monkeypatch.setattr("meeting_mgr.api.edits.extract_key_topics", lambda meeting_id: None)
     org_id = _org()
     member_id, email = _account(org_id)
@@ -196,7 +199,9 @@ def test_regenerating_an_artifact_writes_an_audit_entry(monkeypatch):
             .one()
         )
         assert entry.actor_account_id == member_id
-        assert entry.target == "key_topics"
+        # "someone regenerated key_topics" with no meeting is not an
+        # answerable audit trail for the most destructive action here.
+        assert entry.target == f"meeting:{mid}:key_topics"
 
 
 def test_confirming_attribution_writes_an_audit_entry():
@@ -214,7 +219,7 @@ def test_confirming_attribution_writes_an_audit_entry():
             .one()
         )
         assert entry.actor_account_id == member_id
-        assert entry.target == f"cluster:{cid}"
+        assert entry.target == f"meeting:{mid}:cluster:{cid}"
         assert "participant_name" not in entry.detail, (
             "audit detail must not carry the person's name, only an id reference"
         )
