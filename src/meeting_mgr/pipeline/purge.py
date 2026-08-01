@@ -18,10 +18,16 @@ organization is therefore invisible to the DELETE itself, not merely
 unreachable in application code.
 """
 
+import logging
+
 from meeting_mgr.audit import record_audit
 from meeting_mgr.db import get_org_session
 from meeting_mgr.models import Meeting, Recording
+from meeting_mgr.pipeline.app import celery_app
+from meeting_mgr.retention import select_purge_candidates
 from meeting_mgr.storage import delete_object
+
+logger = logging.getLogger(__name__)
 
 
 def _purge_audio_objects(s, meeting_id: int) -> list[str]:
@@ -95,3 +101,44 @@ def purge_meeting_full(org_id: int, meeting_id: int) -> None:
                 target=f"meeting:{meeting_id}",
                 detail={"keys_deleted": len(keys)},
             )
+
+
+@celery_app.task(name="meeting_mgr.purge_organization")
+def purge_organization(org_id: int) -> None:
+    """Run one organization's retention policy now. Candidates are read
+    through get_org_session(org_id) -- the same RLS-scoped connection every
+    deletion below it uses -- so a bug that somehow computed a candidate
+    from another organization could not actually delete it. One candidate's
+    failure does not stop the batch: a transient storage outage on one
+    Meeting must not withhold the rest of an organization's purge, and the
+    failed one simply remains eligible for the next sweep. The failure is
+    logged (with meeting_id, organization_id, kind, and the exception)
+    before the loop continues, so a Meeting that fails every sweep is
+    visible to an operator instead of silently never leaving the candidate
+    list. select_purge_candidates() defaults to a bounded batch (Task 4): a
+    large backlog drains over several sweeps rather than one unbounded run.
+    A Meeting eligible for both a full and an audio-only purge is returned
+    by select_purge_candidates() exactly once, as "full" -- see its
+    docstring -- so it is purged/audited once here too."""
+    with get_org_session(org_id) as s:
+        candidates = select_purge_candidates(s, org_id)
+    for c in candidates:
+        try:
+            if c.kind == "full":
+                purge_meeting_full(org_id, c.meeting_id)
+            else:
+                purge_meeting_audio(org_id, c.meeting_id)
+        except Exception as exc:
+            # Swallowed on purpose -- one bad Meeting must not abort the
+            # rest of the org's purge; it simply remains eligible for the
+            # next sweep. Logged so a Meeting that keeps failing every sweep
+            # is visible to an operator instead of silently never leaving
+            # the candidate list.
+            logger.exception(
+                "purge_organization: failed to purge meeting_id=%s organization_id=%s kind=%s: %s",
+                c.meeting_id,
+                org_id,
+                c.kind,
+                exc,
+            )
+            continue

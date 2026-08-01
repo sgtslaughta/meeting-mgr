@@ -11,7 +11,11 @@ celery_app = Celery(
     # these modules exist and silently discards every task it receives as
     # "unregistered" -- it did, in production, from Phase 1 until this fix.
     # The compose -I flag is now redundant but kept as belt-and-braces.
-    include=["meeting_mgr.pipeline.orchestrate", "meeting_mgr.api.edits"],
+    include=[
+        "meeting_mgr.pipeline.orchestrate",
+        "meeting_mgr.api.edits",
+        "meeting_mgr.pipeline.purge",
+    ],
 )
 celery_app.conf.update(
     task_acks_late=True,  # a lost worker must not lose an hour of GPU work
