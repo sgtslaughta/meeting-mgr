@@ -19,6 +19,12 @@ def list_watch_folders(s, org_id: int) -> list[WatchFolder]:
 def upsert_watch_folder(
     s, org_id: int, *, root_path: str, owner_account_id: int, enabled: bool = True
 ) -> WatchFolder:
+    # Query-then-insert-or-update, not race-safe: two concurrent upserts of the
+    # same (organization_id, root_path) could both see no row and both insert,
+    # and the loser would hit an unhandled IntegrityError. Accepted here since
+    # watch-folder config is an admin path, not a hot one; see
+    # resolve_participant in participants.py for the begin_nested() SAVEPOINT
+    # pattern to follow if that ever changes.
     wf = s.query(WatchFolder).filter_by(organization_id=org_id, root_path=root_path).one_or_none()
     if wf is None:
         wf = WatchFolder(organization_id=org_id, root_path=root_path)
