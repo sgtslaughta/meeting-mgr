@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 
 from meeting_mgr.auth.deps import get_current_account
 from meeting_mgr.authz import require_role
@@ -11,8 +11,8 @@ router = APIRouter()
 @router.get("/audit-log")
 def read_audit_log(
     account: Account = Depends(get_current_account),
-    limit: int = 50,
-    offset: int = 0,
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     require_role(account, frozenset({"admin", "auditor"}))
     with get_readonly_org_session(account.organization_id) as s:

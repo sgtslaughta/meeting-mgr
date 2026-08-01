@@ -63,6 +63,30 @@ def test_auditor_can_read_the_audit_log():
     assert any(e["action"] == "artifact.edit" for e in r.json())
 
 
+def test_audit_log_limit_above_cap_is_rejected():
+    org_id = _org()
+    _, auditor_email = _account(org_id, role="auditor")
+    r = _client_as(auditor_email).get("/audit-log", params={"limit": 201})
+    assert r.status_code == 422
+
+
+def test_audit_log_default_limit_applies_when_not_given():
+    org_id = _org()
+    actor_id, _ = _account(org_id)
+    with get_session() as s:
+        record_audit(
+            s,
+            organization_id=org_id,
+            actor_account_id=actor_id,
+            action="artifact.edit",
+            target="key_topics:1",
+        )
+    _, auditor_email = _account(org_id, role="auditor")
+    r = _client_as(auditor_email).get("/audit-log")
+    assert r.status_code == 200
+    assert any(e["action"] == "artifact.edit" for e in r.json())
+
+
 def test_audit_log_is_scoped_to_the_callers_organization():
     org_a, org_b = _org(), _org()
     actor_b, _ = _account(org_b)
