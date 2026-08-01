@@ -234,3 +234,32 @@ def test_participant_name_is_unique_per_organization():
     finally:
         with get_session() as s:
             s.query(Participant).filter_by(organization_id=org_id, name=name).delete()
+
+
+def test_render_cited_transcript_breaks_start_seconds_ties_on_segment_id(make_meeting):
+    """Citation anchors make stable ordering load-bearing here: an unstable
+    order makes the [seg.id] anchors the model returns unreproducible
+    between runs on identical input. See test_attribute.py for why the
+    UPDATE below is what gives this test the power to fail."""
+    mid = make_meeting(b"RIFFfake")
+    with get_session() as s:
+        c = SpeakerCluster(meeting_id=mid, label="SPEAKER_00", spans=[])
+        s.add(c)
+        s.flush()
+        first = Segment(
+            meeting_id=mid, cluster_id=c.id, start_seconds=3.0, end_seconds=4.0, text="placeholder"
+        )
+        second = Segment(
+            meeting_id=mid, cluster_id=c.id, start_seconds=3.0, end_seconds=4.0, text="beta"
+        )
+        s.add_all([first, second])
+        s.flush()
+        # Must be a REAL value change -- see test_attribute.py.
+        first.text = "alpha"
+        s.flush()
+        first_id, second_id = first.id, second.id
+    assert first_id < second_id
+    # Dropping `Segment.id` from render_cited_transcript's order_by turns this red.
+    assert ex.render_cited_transcript(mid) == (
+        f"[{first_id}][SPEAKER_00] alpha\n[{second_id}][SPEAKER_00] beta"
+    )

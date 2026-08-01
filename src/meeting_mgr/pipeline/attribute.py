@@ -32,7 +32,14 @@ def render_transcript(meeting_id: int) -> str:
             s.query(Segment, SpeakerCluster)
             .outerjoin(SpeakerCluster, Segment.cluster_id == SpeakerCluster.id)
             .filter(Segment.meeting_id == meeting_id)
-            .order_by(Segment.start_seconds)
+            # Segment.id breaks ties on simultaneous speech. Diarization
+            # routinely emits overlapping turns with identical
+            # start_seconds; without a tiebreak Postgres may return them
+            # in any order, so the same meeting can render a different
+            # transcript on each run -- and the model's attributions
+            # would shift with it. Ordering on insertion id is stable and
+            # matches the order the segments were written.
+            .order_by(Segment.start_seconds, Segment.id)
             .all()
         )
         return "\n".join(f"[{c.label if c else 'UNKNOWN'}] {seg.text}" for seg, c in rows)

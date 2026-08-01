@@ -71,7 +71,12 @@ def render_cited_transcript(meeting_id: int) -> str:
             s.query(Segment, SpeakerCluster)
             .outerjoin(SpeakerCluster, Segment.cluster_id == SpeakerCluster.id)
             .filter(Segment.meeting_id == meeting_id)
-            .order_by(Segment.start_seconds)
+            # Segment.id breaks ties on simultaneous speech -- same
+            # reasoning as pipeline/attribute.py's render_transcript. It
+            # matters more here: this transcript carries [seg.id] citation
+            # anchors, so an unstable order makes the citations the model
+            # returns unreproducible between runs on identical input.
+            .order_by(Segment.start_seconds, Segment.id)
             .all()
         )
         return "\n".join(f"[{seg.id}][{c.label if c else 'UNKNOWN'}] {seg.text}" for seg, c in rows)

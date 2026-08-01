@@ -1,3 +1,14 @@
+# Any OpenAI-compatible endpoint -- hosted API or a local server you run
+# yourself (see the optional `whisper`/`ollama` services below). No default:
+# api/worker never assume a local model is running.
+x-asr-llm-env: &asr_llm_env
+  ASR_BASE_URL: "${ASR_BASE_URL:?ASR_BASE_URL is required (any OpenAI-compatible ASR endpoint)}"
+  ASR_API_KEY: "${ASR_API_KEY:?ASR_API_KEY is required (use \"unused\" for endpoints that ignore it)}"
+  ASR_MODEL: "${ASR_MODEL:?ASR_MODEL is required}"
+  LLM_BASE_URL: "${LLM_BASE_URL:?LLM_BASE_URL is required (any OpenAI-compatible chat endpoint)}"
+  LLM_API_KEY: "${LLM_API_KEY:?LLM_API_KEY is required (use \"unused\" for endpoints that ignore it)}"
+  LLM_MODEL: "${LLM_MODEL:?LLM_MODEL is required}"
+
 services:
   postgres:
     image: postgres:17
@@ -31,15 +42,6 @@ services:
       S3_SECRET_KEY: meetingmeeting
       S3_BUCKET: recordings
       DIARIZER_URL: http://diarizer:8081
-      ASR_BASE_URL: "${ASR_BASE_URL:-http://host.docker.internal:8080/v1}"
-      ASR_API_KEY: "${ASR_API_KEY:-unused}"
-      ASR_MODEL: "${ASR_MODEL:-whisper-1}"
-      LLM_BASE_URL: "${LLM_BASE_URL:-http://host.docker.internal:8080/v1}"
-      LLM_API_KEY: "${LLM_API_KEY:-unused}"
-      LLM_MODEL: "${LLM_MODEL:-local-model}"
-    # host.docker.internal only resolves on Docker Desktop; on vanilla Linux
-    # Docker the default ASR/LLM URLs above need this to reach the host.
-    extra_hosts: ["host.docker.internal:host-gateway"]
     depends_on:
       postgres: { condition: service_healthy }
     restart: "no"
@@ -48,7 +50,7 @@ services:
     build: .
     command: uvicorn meeting_mgr.api.main:app --host 0.0.0.0 --port 8000
     environment:
-      <<: *app_env
+      <<: [*app_env, *asr_llm_env]
       # Least-privilege role RLS policies apply to; used by
       # get_org_session/get_readonly_org_session. The migrate service still
       # runs DDL as the superuser DATABASE_URL above -- it is what creates
@@ -62,7 +64,6 @@ services:
       OIDC_DISCOVERY_URL: "${OIDC_DISCOVERY_URL:-}"
       OIDC_CLIENT_ID: "${OIDC_CLIENT_ID:-}"
       OIDC_CLIENT_SECRET: "${OIDC_CLIENT_SECRET:-}"
-    extra_hosts: ["host.docker.internal:host-gateway"]
     ports: ["8000:8000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
@@ -75,8 +76,8 @@ services:
     # belt-and-braces.
     command: celery -A meeting_mgr.pipeline.app worker -l info
       -I meeting_mgr.pipeline.orchestrate,meeting_mgr.api.edits
-    environment: *app_env
-    extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      <<: [*app_env, *asr_llm_env]
     depends_on:
       migrate: { condition: service_completed_successfully }
       redis: { condition: service_started }
@@ -103,10 +104,36 @@ services:
         reservations:
           devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
 
+  # Optional local-model dev convenience -- NOT started by a plain `docker
+  # compose up`. api/worker/beat never assume these exist; ASR_BASE_URL /
+  # LLM_BASE_URL point wherever the operator configures (any OpenAI-
+  # compatible endpoint, local or hosted). Opt in with
+  # `docker compose --profile local-models up`.
+  whisper:
+    profiles: ["local-models"]
+    image: ghcr.io/speaches-ai/speaches:latest-cuda-12.6.3
+    volumes: ["whisper_cache:/home/ubuntu/.cache/huggingface"]
+    ports: ["8080:8000"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
+  # LLM_MODEL default expects `docker compose exec ollama ollama pull qwen3:32b`
+  # run once. Same opt-in profile as `whisper` above.
+  ollama:
+    profiles: ["local-models"]
+    image: ollama/ollama
+    volumes: ["ollama_data:/root/.ollama"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{ driver: nvidia, count: 1, capabilities: [gpu] }]
+
   web:
     build: ./web
     ports: ["5173:80"]
     depends_on:
       api: { condition: service_started }
 
-volumes: { pgdata: {}, redisdata: {}, miniodata: {} }
+volumes: { pgdata: {}, redisdata: {}, miniodata: {}, whisper_cache: {}, ollama_data: {} }

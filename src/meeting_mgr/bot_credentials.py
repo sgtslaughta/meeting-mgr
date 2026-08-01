@@ -30,7 +30,6 @@ def create_bot_credential(
     s.add(cred)
     s.flush()  # assigns cred.id, needed for the token prefix
     cred.token_hash = hash_password(secret)
-    s.flush()
     return cred, f"{cred.id}.{secret}"
 
 
