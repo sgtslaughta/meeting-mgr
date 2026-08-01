@@ -21,6 +21,8 @@ class Meeting(Base):
     failed_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
     current_stage: Mapped[str | None] = mapped_column(String(30), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    owner_account_id: Mapped[int | None] = mapped_column(ForeignKey("account.id"), nullable=True)
+    visibility: Mapped[str] = mapped_column(String(20), default="private")
 
 
 class Recording(Base):
@@ -38,3 +40,14 @@ class Participant(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     organization_id: Mapped[int] = mapped_column(ForeignKey("organization.id"))
     name: Mapped[str] = mapped_column(String(200))
+
+
+class MeetingShare(Base):
+    """An explicit grant of read access for `visibility == "shared"`."""
+
+    __tablename__ = "meeting_share"
+    __table_args__ = (UniqueConstraint("meeting_id", "account_id", name="uq_meeting_share"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    meeting_id: Mapped[int] = mapped_column(ForeignKey("meeting.id", ondelete="CASCADE"))
+    account_id: Mapped[int] = mapped_column(ForeignKey("account.id", ondelete="CASCADE"))

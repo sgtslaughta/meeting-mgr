@@ -16,24 +16,44 @@ streams incrementally.
 import json
 import threading
 import time
+import uuid
 
 import httpx
 import pytest
 import uvicorn
+from fastapi.testclient import TestClient
 
 from meeting_mgr.api.main import app
+from meeting_mgr.auth.password import hash_password
 from meeting_mgr.db import get_session
-from meeting_mgr.models import Meeting, Organization
+from meeting_mgr.models import Account, Meeting, Organization
 from meeting_mgr.progress import publish
 
 
 def _meeting(status="processing", stage="transcribe") -> int:
     with get_session() as s:
         org = s.query(Organization).filter_by(name="default").one()
-        m = Meeting(organization_id=org.id, title="t", status=status, current_stage=stage)
+        m = Meeting(
+            organization_id=org.id,
+            title="t",
+            status=status,
+            current_stage=stage,
+            visibility="organization",
+        )
         s.add(m)
         s.flush()
         return m.id
+
+
+def _login(client: httpx.Client) -> None:
+    email = f"events-{uuid.uuid4()}@x.com"
+    with get_session() as s:
+        org = s.query(Organization).filter_by(name="default").one()
+        acct = Account(organization_id=org.id, email=email, password_hash=hash_password("pw"))
+        s.add(acct)
+        s.flush()
+    r = client.post("/auth/login", json={"email": email, "password": "pw"})
+    assert r.status_code == 200
 
 
 @pytest.fixture
@@ -52,6 +72,7 @@ def live_client():
 
 
 def test_stream_opens_with_a_snapshot_of_current_state(live_client):
+    _login(live_client)
     mid = _meeting()
     with live_client.stream("GET", f"/meetings/{mid}/events") as r:
         assert r.status_code == 200
@@ -65,6 +86,7 @@ def test_stream_opens_with_a_snapshot_of_current_state(live_client):
 
 
 def test_stream_delivers_published_transitions(live_client):
+    _login(live_client)
     mid = _meeting()
     seen = []
 
@@ -92,6 +114,7 @@ def test_stream_closes_on_a_live_failed_stage_not_only_on_reconnect(live_client)
     exhaustion. If the server generator did not return on a live failed
     event, this test would hang until the client's 10s timeout and fail.
     """
+    _login(live_client)
     mid = _meeting()
 
     def fail_soon():
@@ -105,3 +128,48 @@ def test_stream_closes_on_a_live_failed_stage_not_only_on_reconnect(live_client)
             if line.startswith("data:"):
                 seen.append(json.loads(line.removeprefix("data:").strip()))
     assert {"stage": "transcribe", "state": "failed"} in seen
+
+
+def test_events_requires_authentication():
+    with get_session() as s:
+        org = s.query(Organization).filter_by(name="default").one()
+        m = Meeting(organization_id=org.id, title="t", status="processing")
+        s.add(m)
+        s.flush()
+        mid = m.id
+    r = TestClient(app).get(f"/meetings/{mid}/events")
+    assert r.status_code == 401
+
+
+def test_events_from_another_organization_is_404():
+    # status="published" is deliberate, not incidental: it is a terminal
+    # status, so stream_events() yields the snapshot and returns immediately
+    # instead of blocking in subscribe() -- which means an *authorized*
+    # caller genuinely gets a 200 with a real event-stream body from plain
+    # TestClient, not a hang. If the meeting were left in a non-terminal
+    # status with no live publisher, or missing organization_id/visibility
+    # entirely, the request could 404 (or hang) for a reason that has
+    # nothing to do with authorization, which would make this test pass
+    # vacuously even with authorize() deleted from stream_events().
+    with get_session() as s:
+        org_a = Organization(name=f"org-a-{uuid.uuid4()}")
+        org_b = Organization(name=f"org-b-{uuid.uuid4()}")
+        s.add_all([org_a, org_b])
+        s.flush()
+        acct = Account(
+            organization_id=org_a.id,
+            email=f"a-{uuid.uuid4()}@x.com",
+            password_hash=hash_password("pw"),
+        )
+        m = Meeting(
+            organization_id=org_b.id,
+            title="t",
+            status="published",
+            visibility="organization",
+        )
+        s.add_all([acct, m])
+        s.flush()
+        email, mid = acct.email, m.id
+    c = TestClient(app)
+    c.post("/auth/login", json={"email": email, "password": "pw"})
+    assert c.get(f"/meetings/{mid}/events").status_code == 404

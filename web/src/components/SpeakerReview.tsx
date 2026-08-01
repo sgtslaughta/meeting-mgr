@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { audioUrl, confirmCluster } from "../api";
 import { ProvenanceBadge } from "./ProvenanceBadge";
+import { useAuth } from "../AuthContext";
 import type { AttributionView, Cluster, Span } from "../types";
 
 function longestSpan(spans: Span[]): Span | null {
@@ -12,6 +13,8 @@ export function SpeakerReview({ meetingId, clusters, attributions, onConfirmed }
   meetingId: number; clusters: Cluster[]; attributions: AttributionView[];
   onConfirmed: () => void;
 }) {
+  const { account } = useAuth();
+  const canWrite = account?.role !== "auditor";
   const byCluster = new Map(attributions.map((a) => [a.cluster_id, a]));
   const [names, setNames] = useState<Record<number, string>>(
     Object.fromEntries(clusters.map((c) =>
@@ -33,13 +36,14 @@ export function SpeakerReview({ meetingId, clusters, attributions, onConfirmed }
             )}
             <input value={names[c.id] ?? ""}
                    placeholder="who is this?"
+                   disabled={!canWrite}
                    onChange={(e) =>
                      setNames({ ...names, [c.id]: e.target.value })} />
             <ProvenanceBadge provenance={attribution?.provenance ?? "unknown"} />
-            <button onClick={async () => {
+            {canWrite && <button onClick={async () => {
               await confirmCluster(meetingId, c.id, names[c.id] || null);
               onConfirmed();
-            }}>Confirm</button>
+            }}>Confirm</button>}
           </div>
         );
       })}

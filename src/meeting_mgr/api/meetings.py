@@ -1,17 +1,19 @@
 import json
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from meeting_mgr.db import get_readonly_session, get_session
+from meeting_mgr.auth.deps import get_current_account
+from meeting_mgr.authz import authorize, readable_meetings_filter, require_role
+from meeting_mgr.db import get_org_session, get_readonly_org_session
 from meeting_mgr.models import (
+    Account,
     ActionItem,
     Attribution,
     DecisionPoint,
     KeyTopic,
     Meeting,
     Minute,
-    Organization,
     Participant,
     Recording,
     Segment,
@@ -48,11 +50,20 @@ def run_pipeline(meeting_id: int) -> None:
 
 
 @router.post("/meetings", status_code=201)
-def create_meeting(title: str = Form(...), file: UploadFile = File(...)):
+def create_meeting(
+    title: str = Form(...),
+    file: UploadFile = File(...),
+    account: Account = Depends(get_current_account),
+):
+    require_role(account, frozenset({"admin", "member"}))
     ensure_bucket()
-    with get_session() as s:
-        org = s.query(Organization).filter_by(name="default").one()
-        m = Meeting(organization_id=org.id, title=title, status="pending")
+    with get_org_session(account.organization_id) as s:
+        m = Meeting(
+            organization_id=account.organization_id,
+            owner_account_id=account.id,
+            title=title,
+            status="pending",
+        )
         s.add(m)
         s.flush()
         key = f"raw/{m.id}/{file.filename}"
@@ -64,9 +75,18 @@ def create_meeting(title: str = Form(...), file: UploadFile = File(...)):
 
 
 @router.get("/meetings")
-def list_meetings():
-    with get_readonly_session() as s:
-        rows = s.query(Meeting).order_by(Meeting.id.desc()).all()
+def list_meetings(
+    account: Account = Depends(get_current_account),
+    limit: int = 50,
+    offset: int = 0,
+):
+    with get_readonly_org_session(account.organization_id) as s:
+        q = (
+            s.query(Meeting)
+            .filter(Meeting.organization_id == account.organization_id)
+            .filter(readable_meetings_filter(account))
+        )
+        rows = q.order_by(Meeting.id.desc()).offset(offset).limit(limit).all()
         return [
             {
                 "id": m.id,
@@ -81,11 +101,10 @@ def list_meetings():
 
 
 @router.get("/meetings/{meeting_id}")
-def read_meeting(meeting_id: int):
-    with get_readonly_session() as s:
+def read_meeting(meeting_id: int, account: Account = Depends(get_current_account)):
+    with get_readonly_org_session(account.organization_id) as s:
         m = s.get(Meeting, meeting_id)
-        if m is None:
-            raise HTTPException(404, "meeting not found")
+        authorize(account, m, s)
 
         def rows(model):
             fields = _FIELDS[model]
@@ -121,11 +140,10 @@ def read_meeting(meeting_id: int):
 
 
 @router.get("/meetings/{meeting_id}/events")
-def stream_events(meeting_id: int):
-    with get_readonly_session() as s:
+def stream_events(meeting_id: int, account: Account = Depends(get_current_account)):
+    with get_readonly_org_session(account.organization_id) as s:
         m = s.get(Meeting, meeting_id)
-        if m is None:
-            raise HTTPException(404, "meeting not found")
+        authorize(account, m, s)
         snapshot = {
             "status": m.status,
             "current_stage": m.current_stage,
@@ -178,8 +196,10 @@ def _chunks(stream, size: int = 1 << 16):
 
 
 @router.get("/meetings/{meeting_id}/audio")
-def read_audio(meeting_id: int, request: Request):
-    with get_readonly_session() as s:
+def read_audio(meeting_id: int, request: Request, account: Account = Depends(get_current_account)):
+    with get_readonly_org_session(account.organization_id) as s:
+        m = s.get(Meeting, meeting_id)
+        authorize(account, m, s)
         rec = s.query(Recording).filter_by(meeting_id=meeting_id).one_or_none()
         key = rec.normalized_key if rec else None
     if not key:

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { deleteArtifact, editArtifact, regenerate } from "../api";
 import { ProvenanceBadge } from "./ProvenanceBadge";
+import { useAuth } from "../AuthContext";
 import type { Artifact, ArtifactType, MeetingDetail } from "../types";
 
 const SECTIONS: { type: ArtifactType; heading: string; field: string }[] = [
@@ -20,6 +21,8 @@ export function Artifacts({ meetingId, meeting, onChanged, onCiteClick }: {
   meetingId: number; meeting: MeetingDetail;
   onChanged: () => void; onCiteClick: (segmentId: number) => void;
 }) {
+  const { account } = useAuth();
+  const canWrite = account?.role !== "auditor";
   const [regenerating, setRegenerating] =
     useState<Partial<Record<ArtifactType, boolean>>>({});
   const timers = useRef<Partial<Record<ArtifactType, ReturnType<typeof setInterval>>>>({});
@@ -51,7 +54,7 @@ export function Artifacts({ meetingId, meeting, onChanged, onCiteClick }: {
       {SECTIONS.map(({ type, heading, field }) => (
         <section key={type}>
           <h2>{heading}</h2>
-          <button onClick={async () => {
+          {canWrite && <button onClick={async () => {
             // Regenerating discards human edits in this section only — the
             // other three keep theirs. Say so before doing it.
             if (!confirm(`Regenerate ${heading}? Edits in this section are lost.`))
@@ -68,12 +71,13 @@ export function Artifacts({ meetingId, meeting, onChanged, onCiteClick }: {
               }
               onChanged();
             }, POLL_INTERVAL_MS);
-          }}>Regenerate {heading}</button>
+          }}>Regenerate {heading}</button>}
           {regenerating[type] && <em> Regenerating…</em>}
           <ul>
             {(meeting[type] as Artifact[]).map((item) => (
               <li key={item.id}>
                 <input defaultValue={String(item[field] ?? "")}
+                       disabled={!canWrite}
                        onBlur={async (e) => {
                          if (e.target.value === String(item[field] ?? "")) return;
                          await editArtifact(meetingId, type, item.id,
@@ -88,10 +92,10 @@ export function Artifacts({ meetingId, meeting, onChanged, onCiteClick }: {
                         <button key={c} onClick={() => onCiteClick(c)}>{c}</button>
                       ))}
                 </span>
-                <button onClick={async () => {
+                {canWrite && <button onClick={async () => {
                   await deleteArtifact(meetingId, type, item.id);
                   onChanged();
-                }}>Delete</button>
+                }}>Delete</button>}
               </li>
             ))}
           </ul>
