@@ -34,6 +34,19 @@ def test_failure_records_stage_and_reraises(monkeypatch, make_meeting):
         assert m.status == "failed" and m.failed_stage == "normalize"
 
 
+def test_resume_from_unknown_stage_names_the_bad_value(monkeypatch, make_meeting):
+    mid = make_meeting(b"RIFFfake")
+    monkeypatch.setattr(
+        orch, "STAGES", [(n, lambda m: None) for n in ("normalize", "diarize", "transcribe")]
+    )
+    # names.index() alone would also raise a ValueError mentioning the bad
+    # value ("'nonexistent-stage' is not in list"), so match on the added
+    # "expected one of" clause specifically -- that's what only the new
+    # validation guard produces, and what makes the error actionable.
+    with pytest.raises(ValueError, match=r"nonexistent-stage.*expected one of"):
+        orch.run_pipeline(mid, from_stage="nonexistent-stage")
+
+
 def test_resume_skips_earlier_stages(monkeypatch, make_meeting):
     mid = make_meeting(b"RIFFfake")
     called = []

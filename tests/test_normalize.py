@@ -1,3 +1,4 @@
+import pathlib
 import subprocess
 
 import pytest
@@ -64,6 +65,34 @@ def test_normalize_streams_both_ways(monkeypatch, tmp_path, make_meeting):
 
     assert [name for name, _ in calls] == ["get_stream", "put_stream"]
     assert calls[1][1] == f"normalized/{mid}.wav"
+
+
+def test_normalize_error_does_not_leak_the_temp_directory_path(monkeypatch, make_meeting):
+    from meeting_mgr.pipeline import normalize as mod
+
+    seen_dirs = []
+    real_tmpdir = mod.tempfile.TemporaryDirectory
+
+    class SpyTmpDir(real_tmpdir):
+        def __enter__(self):
+            d = super().__enter__()
+            seen_dirs.append(d)
+            return d
+
+    monkeypatch.setattr(mod.tempfile, "TemporaryDirectory", SpyTmpDir)
+
+    mid = make_meeting(b"not audio at all", name="bad.wav")
+    with pytest.raises(NormalizeError) as exc_info:
+        normalize(mid)
+
+    assert seen_dirs, "temp dir must have been created for the assertion below to be meaningful"
+    tmp_dir = seen_dirs[0]
+    message = str(exc_info.value)
+    assert tmp_dir not in message
+    # Guard the regex against being narrowed to miss the real tempdir shape
+    # (e.g. only matching multi-segment paths): the raw random component
+    # ffmpeg would have echoed back must not survive sanitization either.
+    assert pathlib.Path(tmp_dir).name not in message
 
 
 def test_normalize_raises_normalize_error_on_bad_ffprobe_output(

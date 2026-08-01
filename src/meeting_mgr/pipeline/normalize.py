@@ -1,6 +1,8 @@
 import io
 import json
+import logging
 import pathlib
+import re
 import subprocess
 import tempfile
 
@@ -8,9 +10,28 @@ from meeting_mgr.db import get_readonly_session, get_session
 from meeting_mgr.models import Meeting, Recording
 from meeting_mgr.storage import append_stream, get_stream, put_stream
 
+logger = logging.getLogger(__name__)
+
 
 class NormalizeError(Exception):
     pass
+
+
+# Matches absolute filesystem paths (e.g. the tempfile.TemporaryDirectory
+# path ffmpeg echoes back in its stderr, like "/tmp/tmpAbC123/in"). Used to
+# strip local directory structure from user-facing NormalizeError messages
+# while keeping the basename, which is usually enough to tell whether the
+# input or the output stage failed.
+_PATH_RE = re.compile(r"/(?:[\w.-]+/)+[\w.-]+")
+
+
+def _sanitize(text: str) -> str:
+    """Strip absolute filesystem paths from ffmpeg/ffprobe output before it
+    becomes part of a NormalizeError. The full, unsanitized text is logged
+    at debug level so operators can still diagnose genuine encoding
+    failures locally."""
+    logger.debug("normalize subprocess output (unsanitized): %s", text)
+    return _PATH_RE.sub(lambda m: pathlib.Path(m.group()).name, text)
 
 
 def _write_manifest_chunks(manifest_key: str, fh) -> None:
@@ -59,7 +80,7 @@ def normalize(meeting_id: int) -> None:
             capture_output=True,
         )
         if proc.returncode != 0 or not dst.exists():
-            raise NormalizeError(proc.stderr.decode()[-800:])
+            raise NormalizeError(_sanitize(proc.stderr.decode()[-800:]))
         probe = subprocess.run(
             [
                 "ffprobe",
@@ -75,7 +96,7 @@ def normalize(meeting_id: int) -> None:
             text=True,
         )
         if probe.returncode != 0:
-            raise NormalizeError(f"ffprobe failed: {probe.stderr.strip()[-800:]}")
+            raise NormalizeError(f"ffprobe failed: {_sanitize(probe.stderr.strip()[-800:])}")
         try:
             duration = float(probe.stdout.strip())
         except ValueError as e:

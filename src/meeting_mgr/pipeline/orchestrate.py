@@ -47,6 +47,8 @@ def _set_current_stage(meeting_id: int, stage: str | None) -> None:
 @celery_app.task(name="meeting_mgr.run_pipeline")
 def run_pipeline(meeting_id: int, from_stage: str | None = None) -> None:
     names = [n for n, _ in STAGES]
+    if from_stage and from_stage not in names:
+        raise ValueError(f"unknown stage {from_stage!r}; expected one of {names}")
     start = names.index(from_stage) if from_stage else 0
     for name, fn in STAGES[start:]:
         _set_current_stage(meeting_id, name)
