@@ -101,11 +101,15 @@ def test_revoke_sets_revoked_at_and_is_scoped_by_organization():
         )
 
 
-def test_list_is_confined_by_rls_under_the_org_scoped_session():
-    """Runs through get_org_session -- the RLS-enforced, least-privilege
-    path admin endpoints (Task 3) will actually use -- not get_session's
-    RLS-exempt superuser connection. Proves list_bot_credentials cannot see
-    another org's rows even before the app-layer filter is considered."""
+def test_list_excludes_other_orgs_rows_under_the_org_scoped_session():
+    """Runs through get_org_session -- the least-privilege path admin
+    endpoints (Task 3) will actually use -- rather than get_session's
+    RLS-exempt superuser connection. NOT an RLS test: the org_id argument
+    here agrees with the session's own org, so the app-layer
+    filter_by(organization_id=...) alone excludes the other org's row --
+    confirmed by mutating the policy to USING (true) and seeing this test
+    stay green. This pins the app-layer filter under a realistic session
+    type, nothing more."""
     org_a, org_b = _org(), _org()
     account_a, account_b = _account(org_a), _account(org_b)
     with get_org_session(org_a) as s:
@@ -119,9 +123,15 @@ def test_list_is_confined_by_rls_under_the_org_scoped_session():
 
 
 def test_list_with_org_id_argument_disagreeing_with_session_org_returns_nothing():
-    """The RLS session is scoped to org_a via app.org_id, but the org_id
-    argument passed in disagrees (asks for org_b). The two predicates
-    intersect, so this must fail closed -- neither org's rows leak out."""
+    """Genuine RLS test: the org_id argument (org_b) names org_b's row's
+    *real* organization, so the app-layer filter_by(organization_id=org_b)
+    would match it on its own -- only RLS (session scoped to org_a) blocks
+    it. This is the one configuration where the app-layer filter cannot
+    subsume RLS, so it is the load-bearing case. Verified by mutating the
+    policy to USING (true)/WITH CHECK (true): this test goes red while
+    test_list_excludes_other_orgs_rows_under_the_org_scoped_session (above)
+    stays green. If the org_id argument is ever "simplified" to agree with
+    the session's own org, this stops testing RLS -- don't do that."""
     org_a, org_b = _org(), _org()
     account_a, account_b = _account(org_a), _account(org_b)
     with get_org_session(org_a) as s:
@@ -144,9 +154,14 @@ def test_revoke_is_confined_by_rls_under_the_org_scoped_session():
         cred_b, _ = create_bot_credential(s, org_b, label="b", owner_account_id=account_b)
         cred_b_id = cred_b.id
 
-    # org_a's session cannot revoke org_b's credential, even though the
-    # app-layer org_id argument passed is org_b's own id -- RLS hides the
-    # row from this session before the app-layer filter even runs.
+    # Genuine RLS test: the org_id argument (org_b) names cred_b's *real*
+    # organization, so the app-layer filter_by(id=cred_b_id,
+    # organization_id=org_b) would match it on its own -- only RLS (session
+    # scoped to org_a) blocks it. Verified by mutating the policy to
+    # USING (true)/WITH CHECK (true): this assertion goes red while
+    # test_revoke_requires_credential_id_and_org_id_to_agree (below) stays
+    # green. Don't "simplify" org_b here to org_a -- that would destroy the
+    # only RLS coverage this test has.
     with get_org_session(org_a) as s:
         assert revoke_bot_credential(s, org_b, cred_b_id) is None, (
             "RLS did not confine bot_credential to its own organization"
@@ -158,7 +173,14 @@ def test_revoke_is_confined_by_rls_under_the_org_scoped_session():
         assert revoked.revoked_at is not None
 
 
-def test_revoke_with_org_id_argument_disagreeing_with_session_org_revokes_nothing():
+def test_revoke_requires_credential_id_and_org_id_to_agree():
+    """NOT an RLS test: cred_a_id belongs to org_a, and the session is also
+    org_a, so RLS would happily let this row through. The org_id argument
+    passed (org_b) disagrees with the credential's *real* organization, so
+    the app-layer predicate id=cred_a_id AND organization_id=org_b never
+    matches regardless of RLS -- confirmed by mutating the policy to
+    USING (true) and seeing this test stay green. This pins the app-layer
+    filter, nothing more."""
     org_a, org_b = _org(), _org()
     account_a, account_b = _account(org_a), _account(org_b)
     with get_org_session(org_a) as s:
@@ -167,9 +189,6 @@ def test_revoke_with_org_id_argument_disagreeing_with_session_org_revokes_nothin
     with get_org_session(org_b) as s:
         create_bot_credential(s, org_b, label="b", owner_account_id=account_b)
 
-    # Session is scoped to org_a, but the org_id argument disagrees (org_b).
-    # Even though cred_a_id is visible to this session under RLS, the
-    # app-layer predicate org_id == org_b never matches it.
     with get_org_session(org_a) as s:
         assert revoke_bot_credential(s, org_b, cred_a_id) is None
 
