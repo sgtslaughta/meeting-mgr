@@ -6,7 +6,7 @@ from meeting_mgr.auth.deps import get_current_account
 from meeting_mgr.authz import require_role
 from meeting_mgr.db import get_org_session, get_readonly_org_session
 from meeting_mgr.models import Account
-from meeting_mgr.retention import get_policy, upsert_policy
+from meeting_mgr.retention import get_policy, select_purge_candidates, upsert_policy
 
 router = APIRouter(prefix="/retention-policy")
 
@@ -54,6 +54,25 @@ def read_policy(account: Account = Depends(get_current_account)):
     require_role(account, _ADMIN_ONLY)
     with get_readonly_org_session(account.organization_id) as s:
         return _view(get_policy(s, account.organization_id))
+
+
+@router.get("/preview")
+def preview_purge(account: Account = Depends(get_current_account)):
+    require_role(account, _ADMIN_ONLY)
+    with get_readonly_org_session(account.organization_id) as s:
+        # limit=None: an operator asking "what would this delete?" wants
+        # the whole backlog, not one purge_organization batch of it (Task 4).
+        candidates = select_purge_candidates(s, account.organization_id, limit=None)
+        return [
+            {
+                "meeting_id": c.meeting_id,
+                "title": c.title,
+                "created_at": c.created_at,
+                "kind": c.kind,
+                "provenance_counts": c.provenance_counts,
+            }
+            for c in candidates
+        ]
 
 
 @router.put("")
