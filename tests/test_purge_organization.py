@@ -110,6 +110,44 @@ def test_purge_organization_does_not_touch_a_sibling_meeting_in_the_same_org():
     assert get_object(young_norm_key) == b"norm"
 
 
+def test_purge_organization_audio_kind_does_not_touch_a_sibling_recording_in_the_same_org():
+    """Mirror of test_purge_organization_does_not_touch_a_sibling_meeting_in_the_same_org
+    for the audio-only branch: Recording has no organization_id column, so
+    the "widened to organization_id" typo cannot be written the same way
+    here -- but that is a property of today's schema, not a proof, and this
+    is the one of the three delete paths (purge_meeting_full,
+    purge_organization/full, purge_meeting_audio) that had no sibling guard
+    at all."""
+    from meeting_mgr.pipeline.purge import purge_organization
+
+    org_id = _org()
+    old_id, _, _ = _full_meeting(org_id, age_days=100)
+    young_id, young_raw_key, young_norm_key = _full_meeting(org_id, age_days=1)
+    with get_session() as s:
+        upsert_policy(s, org_id, audio_retention_days=30, meeting_retention_days=None)
+
+    purge_organization(org_id)
+
+    with get_session() as s:
+        assert s.get(Meeting, old_id) is not None, "audio-only purge must keep the Meeting row"
+        assert s.query(Recording).filter_by(meeting_id=old_id).count() == 0
+
+        assert s.query(Meeting).filter_by(id=young_id).count() == 1
+        assert s.query(Recording).filter_by(meeting_id=young_id).count() == 1
+        assert s.query(Segment).filter_by(meeting_id=young_id).count() == 1
+        assert s.query(SpeakerCluster).filter_by(meeting_id=young_id).count() == 1
+        assert s.query(ActionItem).filter_by(meeting_id=young_id).count() == 1
+        young_cluster_ids = [
+            c.id for c in s.query(SpeakerCluster).filter_by(meeting_id=young_id).all()
+        ]
+        assert (
+            s.query(Attribution).filter(Attribution.cluster_id.in_(young_cluster_ids)).count() == 1
+        )
+
+    assert get_object(young_raw_key) == b"raw"
+    assert get_object(young_norm_key) == b"norm"
+
+
 def test_purge_organization_purges_every_eligible_meeting():
     from meeting_mgr.pipeline.purge import purge_organization
 

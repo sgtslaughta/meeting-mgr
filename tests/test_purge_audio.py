@@ -227,6 +227,46 @@ def test_purge_meeting_audio_closes_the_loop_meeting_no_longer_an_audio_candidat
     assert after == []
 
 
+def test_purge_meeting_audio_does_not_touch_a_sibling_meetings_recording_in_the_same_org():
+    """RLS scopes by organization, not by meeting -- a filter mistake that
+    widens the Recording delete beyond meeting_id would pass every cross-org
+    test while destroying every sibling's Recording in the same org. Guard
+    against that class of bug directly on the audio-only path, mirroring
+    test_purge_meeting_full_does_not_touch_a_sibling_meeting_in_the_same_org
+    and test_purge_organization_does_not_touch_a_sibling_meeting_in_the_same_org."""
+    from meeting_mgr.pipeline.purge import purge_meeting_audio
+
+    org_id = _org()
+    victim_id = _meeting_with_full_artifacts(org_id)
+    sibling_id = _meeting_with_full_artifacts(org_id)
+    with get_session() as s:
+        sibling_rec = s.query(Recording).filter_by(meeting_id=sibling_id).one()
+        sibling_raw_key, sibling_norm_key = sibling_rec.raw_key, sibling_rec.normalized_key
+
+    purge_meeting_audio(org_id, victim_id)
+
+    with get_session() as s:
+        assert s.query(Recording).filter_by(meeting_id=victim_id).count() == 0
+
+        assert s.query(Recording).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(Segment).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(KeyTopic).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(Minute).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(ActionItem).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(DecisionPoint).filter_by(meeting_id=sibling_id).count() == 1
+        assert s.query(SpeakerCluster).filter_by(meeting_id=sibling_id).count() == 1
+        sibling_cluster_ids = [
+            c.id for c in s.query(SpeakerCluster).filter_by(meeting_id=sibling_id).all()
+        ]
+        assert (
+            s.query(Attribution).filter(Attribution.cluster_id.in_(sibling_cluster_ids)).count()
+            == 1
+        )
+
+    assert get_object(sibling_raw_key) == b"raw-bytes"
+    assert get_object(sibling_norm_key) == b"norm-bytes"
+
+
 def test_purge_meeting_audio_is_a_no_op_when_run_twice():
     from meeting_mgr.pipeline.purge import purge_meeting_audio
 
