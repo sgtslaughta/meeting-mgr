@@ -3,6 +3,15 @@ silently ejected, leaves its Meeting stuck in "capturing" forever with no
 other signal. This task is the "how does an operator know" answer for that
 failure mode -- the same heartbeat-and-sweep shape Phase 5's
 WatchFolder.last_scan_at/stalled established for a stalled watcher.
+
+Also sweeps "finishing" -- api/bot.py::finish_session commits that status
+as its FIRST step (see its docstring), then does the manifest-building work
+in a second, later transaction. A crash between those two leaves the
+Meeting in "finishing" with no other code path able to move it: a retried
+finish() 409s (status != "capturing"), and this sweep's own pre-fix filter
+(status == "capturing" only) never selected it. This is the sole recovery
+path for that state -- see finish_session's docstring for why client-side
+retry was rejected in favor of this sweep instead.
 """
 
 import logging
@@ -36,7 +45,16 @@ def sweep_stale_bot_sessions(now: datetime | None = None) -> None:
         rows = (
             s.query(BotSession.id, BotSession.organization_id, BotSession.meeting_id)
             .join(Meeting, Meeting.id == BotSession.meeting_id)
-            .filter(Meeting.status == "capturing", BotSession.last_activity_at <= cutoff)
+            .filter(
+                # "finishing" reuses the same BotSession.last_activity_at
+                # heartbeat as "capturing": finish_session never touches
+                # last_activity_at, so by the time a Meeting has been
+                # sitting in "finishing" for this long, the value is
+                # already stale from the last chunk upload before finish()
+                # was ever called -- no separate timestamp is needed.
+                Meeting.status.in_(("capturing", "finishing")),
+                BotSession.last_activity_at <= cutoff,
+            )
             .all()
         )
 
@@ -44,13 +62,40 @@ def sweep_stale_bot_sessions(now: datetime | None = None) -> None:
         try:
             with get_org_session(organization_id) as s:
                 m = s.get(Meeting, meeting_id)
-                if m is not None and m.status == "capturing":
+                if m is None:
+                    continue
+                # Re-check right before writing, same reasoning as before:
+                # a Meeting that legitimately left "capturing"/"finishing"
+                # between the untenanted read above and this write (e.g. a
+                # finish() call that completes normally in between) must
+                # not be raced by this sweep.
+                if m.status == "capturing":
                     m.status, m.failed_stage = "failed", "bot_ingest"
                     record_audit(
                         s,
                         organization_id=organization_id,
                         actor_account_id=None,
                         action="meeting.bot_ingest.stale",
+                        target=f"meeting:{meeting_id}",
+                        detail={"bot_session_id": session_id},
+                    )
+                elif m.status == "finishing":
+                    # Failed out, not resumed: a half-built manifest (some
+                    # chunks may have landed after the flip, some may not
+                    # have) is not obviously safe to auto-complete from a
+                    # background sweep with no request context, and this
+                    # mirrors finish_session's own empty-chunk case (also a
+                    # terminal "failed", never a silent retry). A distinct
+                    # failed_stage from "bot_ingest" so an operator can tell
+                    # "never made it past its first chunk" apart from
+                    # "crashed while finishing, chunks may be orphaned in
+                    # storage."
+                    m.status, m.failed_stage = "failed", "bot_ingest_finish_stuck"
+                    record_audit(
+                        s,
+                        organization_id=organization_id,
+                        actor_account_id=None,
+                        action="meeting.bot_ingest.finish_stuck",
                         target=f"meeting:{meeting_id}",
                         detail={"bot_session_id": session_id},
                     )

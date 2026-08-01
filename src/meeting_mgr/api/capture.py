@@ -108,7 +108,14 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
     with get_org_session(account.organization_id) as s:
         m = s.get(Meeting, meeting_id)
         authorize(account, m, s, write=True)
-        if m.status != "capturing":
+        # "finishing" is accepted here as well as "capturing" -- unlike
+        # bot.py's finish_session, browser capture has no background sweep
+        # (no BotSession-equivalent heartbeat exists to detect a stalled
+        # capture), so if a crash strands a Meeting in "finishing" (see the
+        # flip below), a retried finish() call is the ONLY recovery path.
+        # Concurrent-safety for that retry is handled below at the
+        # transition out of "finishing", not here.
+        if m.status not in ("capturing", "finishing"):
             raise HTTPException(409, "meeting is not in capture state")
         # TOCTOU fix: flip status FIRST, committed in this transaction alone,
         # before taking the list_keys() snapshot below. Previously the
@@ -132,6 +139,26 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
         # manifest. This narrows the vulnerable window from "the entire body
         # of finish_capture" down to "one already-in-flight straggler's
         # remaining put_stream() latency" -- it does not eliminate it.
+        #
+        # Crash-point recovery, walked end to end (the invariant this
+        # function upholds: no crash point here leaves the Meeting in a
+        # state nothing can move it out of):
+        #   - before this commit: status is untouched ("capturing"); a
+        #     retried finish() re-enters exactly here. Always recoverable.
+        #   - after this commit, before the transition below: status is
+        #     "finishing"; a retried finish() re-enters this function,
+        #     passes the check above, and reaches the transition below.
+        #     Recoverable by retry.
+        #   - during the transition below: it is a single conditional
+        #     UPDATE guarded on status == "finishing" (see comment there),
+        #     so a crash there either lands the whole transaction (status
+        #     moves on, retry now 409s because there's nothing left to do)
+        #     or rolls it back entirely (status stays "finishing", retry
+        #     tries again). No partial state is possible.
+        #   - after that transaction commits, before run_pipeline(): status
+        #     is "pending" but the pipeline was never dispatched. This is a
+        #     pre-existing gap, not introduced or widened by this fix, and
+        #     out of this pass's scope -- flagged in the fix report.
         m.status = "finishing"
     _finish_race_hook(meeting_id)
     prefix = _chunk_prefix(meeting_id)
@@ -143,8 +170,8 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
     keys = sorted(list_keys(prefix), key=lambda k: _chunk_seq(prefix, k))
 
     empty = False
+    duplicate = False
     with get_org_session(account.organization_id) as s:
-        m = s.get(Meeting, meeting_id)
         if not keys:
             # An empty capture (finish with zero chunks uploaded, or none
             # landed even after the status flip above) is rejected outright
@@ -153,8 +180,27 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
             # Revert to "capturing" so the client can retry (upload a chunk
             # it was still holding, then call finish again) -- same
             # recoverable shape the pre-fix 422 behavior had.
-            m.status = "capturing"
-            empty = True
+            #
+            # Guarded by a conditional UPDATE (status == "finishing" in the
+            # WHERE clause, not a plain attribute assignment on an
+            # already-loaded row) rather than "read m, check, then write
+            # m.status": now that "finishing" is retry-enterable, two
+            # concurrent finish() calls on the same Meeting could otherwise
+            # both pass the check above and both reach here, and a
+            # read-then-write would let both perform their branch -- a
+            # duplicate Recording row in the non-empty case below. The
+            # UPDATE...WHERE is atomic at the row level; exactly one
+            # concurrent caller's statement can match and update per
+            # transition, the other affects zero rows.
+            updated = (
+                s.query(Meeting)
+                .filter(Meeting.id == meeting_id, Meeting.status == "finishing")
+                .update({"status": "capturing"}, synchronize_session=False)
+            )
+            if updated:
+                empty = True
+            else:
+                duplicate = True
         else:
             # A gap in the sequence (e.g. chunks 1, 2, 4 exist) is NOT
             # treated as an error here: the client-supplied seq gives no way
@@ -164,10 +210,30 @@ def finish_capture(meeting_id: int, account: Account = Depends(get_current_accou
             # content-addressed/counted guarantee (see upload_chunk's
             # docstring), so a gap is accepted as a lossy capture: whatever
             # chunks exist, in order, go in the manifest.
-            manifest_key = f"raw/{meeting_id}/manifest.json"
-            put_object(manifest_key, json.dumps(keys).encode())
-            s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))
-            m.status = "pending"
+            updated = (
+                s.query(Meeting)
+                .filter(Meeting.id == meeting_id, Meeting.status == "finishing")
+                .update({"status": "pending"}, synchronize_session=False)
+            )
+            if updated:
+                manifest_key = f"raw/{meeting_id}/manifest.json"
+                put_object(manifest_key, json.dumps(keys).encode())
+                s.add(Recording(meeting_id=meeting_id, raw_key=f"manifest:{manifest_key}"))
+            else:
+                duplicate = True
+
+    if duplicate:
+        # Lost the race: a concurrent finish() call (or this call's own
+        # retry racing a still-in-flight original attempt) already moved
+        # the Meeting on. Report whatever is now true instead of writing a
+        # second Recording or raising a misleading error.
+        with get_readonly_org_session(account.organization_id) as s:
+            current = s.get(Meeting, meeting_id)
+            status_now = current.status if current else "unknown"
+        if status_now == "capturing":
+            raise HTTPException(422, "no chunks were uploaded")
+        return {"meeting_id": meeting_id, "status": status_now}
+
     if empty:
         raise HTTPException(422, "no chunks were uploaded")
     run_pipeline(meeting_id)

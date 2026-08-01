@@ -500,3 +500,109 @@ def test_capture_chunks_reassemble_byte_for_byte_in_upload_order(monkeypatch, tm
         _write_manifest_chunks(manifest_key, fh)
 
     assert out.read_bytes() == b"".join(chunks)
+
+
+def test_a_meeting_stranded_in_finishing_is_reclaimed_by_a_retried_finish_call(monkeypatch):
+    """Constructs the stranded state directly (a Meeting left in
+    "finishing" as if the process crashed between finish_capture's status
+    flip and the manifest-building transaction that follows it) rather than
+    simulating the crash itself. Browser capture has no background sweep
+    (no BotSession-equivalent heartbeat exists for it), so a retried
+    finish() call is the only recovery path -- see finish_capture's
+    docstring.
+
+    Kill: reverting finish_capture's entry check to `if m.status !=
+    "capturing"` (rejecting "finishing" instead of accepting it alongside
+    "capturing") turns this red -- the retry would 409 instead of
+    completing.
+    """
+    from meeting_mgr.api import capture
+
+    monkeypatch.setattr(capture, "run_pipeline", lambda meeting_id: None)
+
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c0.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+    with get_session() as s:
+        s.get(Meeting, meeting_id).status = "finishing"
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+    assert r.json()["status"] == "pending"
+
+    with get_session() as s:
+        assert s.get(Meeting, meeting_id).status == "pending"
+        rec = s.query(Recording).filter_by(meeting_id=meeting_id).one()
+        assert rec.raw_key.startswith("manifest:")
+
+
+def test_a_second_concurrent_finish_call_does_not_duplicate_the_recording(monkeypatch):
+    """Simulates two finish() calls reaching the "finishing" transition
+    concurrently, reusing item 1's race-hook seam: the hook (which fires
+    after the status flip commits, before the snapshot) itself issues a
+    second, complete finish() call for the same Meeting. That nested call
+    wins the CAS transition and builds the manifest; the outer call's own
+    CAS then loses (status is no longer "finishing" by the time it runs)
+    and must not insert a second Recording.
+
+    Kill: replacing the conditional UPDATE...WHERE status == "finishing"
+    with a plain `m.status = "pending"` read-then-write (a naive retry
+    implementation) turns this red -- both calls would then unconditionally
+    insert a Recording row, and this asserts exactly one exists.
+    """
+    from meeting_mgr.api import capture
+
+    monkeypatch.setattr(capture, "run_pipeline", lambda meeting_id: None)
+
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    c.put(
+        f"/meetings/{meeting_id}/capture/chunks/0",
+        files={"chunk": ("c0.webm", io.BytesIO(b"x"), "audio/webm")},
+    )
+
+    calls = {"n": 0}
+    inner_result = {}
+
+    def race(mid):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            return  # the nested call's own hook invocation: no-op, avoid recursion
+        r = c.post(f"/meetings/{mid}/capture/finish")
+        inner_result["status_code"] = r.status_code
+
+    monkeypatch.setattr(capture, "_finish_race_hook", race)
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 200
+    assert inner_result["status_code"] == 200
+
+    with get_session() as s:
+        assert s.query(Recording).filter_by(meeting_id=meeting_id).count() == 1
+
+
+def test_a_retried_finish_with_no_chunks_still_reverts_to_capturing():
+    """Empty-manifest retry path: a Meeting stranded in "finishing" with no
+    chunks (the finish that stranded it never had any to begin with) must
+    still land on the same recoverable 422/"capturing" shape as the
+    non-retry empty case.
+    """
+    org_id = _org()
+    email = _account(org_id, role="member")
+    c = _client_as(email)
+    meeting_id = c.post("/meetings/capture", data={"title": "s"}).json()["meeting_id"]
+    with get_session() as s:
+        s.get(Meeting, meeting_id).status = "finishing"
+
+    r = c.post(f"/meetings/{meeting_id}/capture/finish")
+    assert r.status_code == 422
+
+    with get_session() as s:
+        assert s.get(Meeting, meeting_id).status == "capturing"

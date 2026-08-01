@@ -59,6 +59,49 @@ def test_a_stale_session_is_marked_failed():
         assert m.failed_stage == "bot_ingest"
 
 
+def test_a_meeting_stuck_in_finishing_is_reclaimed_and_failed_out():
+    """Constructs the stranded state directly (a Meeting left in
+    "finishing" by finish_session's status flip, as if the process crashed
+    before the manifest-building transaction that follows it) rather than
+    simulating the crash itself -- this is the sole recovery path for that
+    state (see api/bot.py::finish_session's docstring: a retried finish()
+    call still 409s, deliberately not retryable).
+
+    Kill: removing "finishing" from the sweep's status filter (reverting to
+    Meeting.status == "capturing" only) turns this red -- the row would
+    never be selected and status/failed_stage would stay unchanged.
+    """
+    org_id, account_id = _org_account()
+    meeting_id = _meeting(org_id, account_id, status="finishing")
+    stale = datetime.utcnow() - timedelta(seconds=STALE_SESSION_SECONDS + 60)
+    _bot_session(org_id, account_id, meeting_id, last_activity_at=stale)
+
+    sweep_stale_bot_sessions.run()
+
+    with get_session() as s:
+        m = s.get(Meeting, meeting_id)
+        assert m.status == "failed"
+        # Distinct from the "capturing" case's failed_stage -- an operator
+        # can tell "crashed while finishing, chunks may be orphaned in
+        # storage" apart from "never made it past its first chunk."
+        assert m.failed_stage == "bot_ingest_finish_stuck"
+
+
+def test_a_fresh_finishing_meeting_is_left_alone():
+    """A finish() call genuinely in progress (not crashed) must not be
+    raced by the sweep -- last_activity_at is fresh (from the last chunk
+    upload before finish() was called), so the staleness cutoff excludes
+    it."""
+    org_id, account_id = _org_account()
+    meeting_id = _meeting(org_id, account_id, status="finishing")
+    _bot_session(org_id, account_id, meeting_id, last_activity_at=datetime.utcnow())
+
+    sweep_stale_bot_sessions.run()
+
+    with get_session() as s:
+        assert s.get(Meeting, meeting_id).status == "finishing"
+
+
 def test_a_fresh_session_is_left_alone():
     org_id, account_id = _org_account()
     meeting_id = _meeting(org_id, account_id)

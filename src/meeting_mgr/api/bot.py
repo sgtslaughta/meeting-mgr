@@ -173,11 +173,21 @@ def finish_session(session_id: int, credential: BotCredential = Depends(get_bot_
         m = s.get(Meeting, session.meeting_id)
         if m.status != "capturing":
             # Covers both a second finish() call and any other state the
-            # Meeting has already left "capturing" for. The sweep
-            # (pipeline/bot.py) only ever touches Meetings still in
-            # "capturing", so a legitimately finished Meeting (status now
-            # "pending", "finishing", or "failed") can never be raced by it
-            # afterwards.
+            # Meeting has already left "capturing" for. Deliberately NOT
+            # retryable: a second finish() call while status == "finishing"
+            # still 409s here rather than resuming, because the first call
+            # may still be genuinely in flight (mid-flight status flip is
+            # commited well before its manifest work completes -- see
+            # below) -- resuming from a second concurrent request risks a
+            # duplicate Recording row. sweep_stale_bot_sessions
+            # (pipeline/bot.py) is therefore the ONLY recovery path for a
+            # Meeting stranded in "finishing" by a crash: it now sweeps
+            # "finishing" (not just "capturing") past the same staleness
+            # threshold and fails it out with a distinct failed_stage. A
+            # Meeting genuinely mid-finish (not crashed) is never touched by
+            # it: the sweep's own re-check right before writing, and the
+            # staleness cutoff, both exist precisely so a normal finish() in
+            # progress is not raced.
             raise HTTPException(409, "session is not in a capturing state")
         meeting_id = m.id
         # TOCTOU fix: flip status FIRST, committed in this transaction
