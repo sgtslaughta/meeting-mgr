@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from meeting_mgr.bot_credentials import create_bot_credential
 from meeting_mgr.db import get_session
 from meeting_mgr.models import Account, BotSession, Meeting, Organization
+from meeting_mgr.pipeline.app import celery_app
 from meeting_mgr.pipeline.bot import sweep_stale_bot_sessions
 from meeting_mgr.pipeline.bot_config import STALE_SESSION_SECONDS
 
@@ -149,3 +150,18 @@ def test_one_failed_row_does_not_block_the_others(monkeypatch, caplog):
         assert s.get(Meeting, meeting_bad).status == "capturing"
         assert s.get(Meeting, meeting_good).status == "failed"
     assert any(str(meeting_bad) in r.message for r in caplog.records)
+
+
+def test_sweep_task_is_included_and_scheduled_and_registered():
+    """A worker that never imports pipeline/bot.py never registers this
+    task (Phase 1's inert-worker bug), and a beat entry naming a task that
+    is not registered is just as silent a failure (logs an
+    unregistered-task error at runtime, no test goes red). Check both ends,
+    and cross-check them against each other -- via `celery_app.tasks`
+    membership, not a literal string on each side -- so a rename on only
+    one side is caught."""
+    assert "meeting_mgr.pipeline.bot" in celery_app.conf.include
+
+    entry = celery_app.conf.beat_schedule.get("sweep-stale-bot-sessions")
+    assert entry is not None
+    assert entry["task"] in celery_app.tasks
