@@ -51,3 +51,22 @@ export async function deleteArtifact(meetingId: number, type: ArtifactType,
 
 export const regenerate = (meetingId: number, type: ArtifactType) =>
   json(`/meetings/${meetingId}/regenerate/${type}`, { method: "POST" });
+
+export async function startCapture(title: string) {
+  const form = new FormData();
+  form.append("title", title);
+  return json<{ meeting_id: number; status: string }>("/meetings/capture", { method: "POST", body: form });
+}
+
+export async function uploadCaptureChunk(meetingId: number, seq: number, blob: Blob) {
+  const form = new FormData();
+  form.append("chunk", blob, `chunk-${seq}.webm`);
+  const r = await fetch(`/meetings/${meetingId}/capture/chunks/${seq}`, { method: "PUT", body: form });
+  if (!r.ok) throw new ApiError(r.status, `chunk ${seq} upload failed: ${r.status}`);
+}
+
+export const listCaptureChunks = (meetingId: number) =>
+  json<{ seqs: number[] }>(`/meetings/${meetingId}/capture/chunks`);
+
+export const finishCapture = (meetingId: number) =>
+  json<{ meeting_id: number; status: string }>(`/meetings/${meetingId}/capture/finish`, { method: "POST" });

@@ -1,3 +1,5 @@
+import shutil
+
 import boto3
 from botocore.exceptions import ClientError
 
@@ -53,12 +55,42 @@ def get_stream(key: str, fileobj) -> None:
     _client().download_fileobj(get_settings().s3_bucket, key, fileobj)
 
 
+def append_stream(key: str, fileobj) -> None:
+    """Stream an object onto fileobj at its CURRENT position, without
+    resetting it -- for writing multiple objects into one handle in sequence
+    (chunk-manifest reconstruction).
+
+    get_stream()/download_fileobj is NOT safe for this: s3transfer manages
+    its own internal write cursor per transfer and writes from offset 0 on
+    every call regardless of object size, so a second get_stream() into the
+    same handle silently overwrites the first instead of appending -- this
+    is not only an issue above the multipart threshold, it reproduces on
+    two small chunks. Streaming the raw response body through
+    shutil.copyfileobj instead uses plain sequential fh.write() calls, which
+    respects wherever the handle already is.
+    """
+    body = _client().get_object(Bucket=get_settings().s3_bucket, Key=key)["Body"]
+    shutil.copyfileobj(body, fileobj)
+
+
 def delete_object(key: str) -> None:
     _client().delete_object(Bucket=get_settings().s3_bucket, Key=key)
 
 
 class RangeNotSatisfiable(Exception):
     """The requested range starts past the end of the object."""
+
+
+def list_keys(prefix: str) -> list[str]:
+    """List object keys under a prefix -- keys only, never bodies. Exists so
+    capture-chunk resumability (GET /meetings/{id}/capture/chunks) never
+    needs to download a chunk merely to know it exists."""
+    paginator = _client().get_paginator("list_objects_v2")
+    keys: list[str] = []
+    for page in paginator.paginate(Bucket=get_settings().s3_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys.append(obj["Key"])
+    return keys
 
 
 def open_object(key: str, byte_range: str | None = None):

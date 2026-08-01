@@ -18,29 +18,80 @@ organization is therefore invisible to the DELETE itself, not merely
 unreachable in application code.
 """
 
+import json
 import logging
+
+from botocore.exceptions import ClientError
 
 from meeting_mgr.audit import record_audit
 from meeting_mgr.db import get_org_session, get_readonly_session
 from meeting_mgr.models import Meeting, Recording, RetentionPolicy
 from meeting_mgr.pipeline.app import celery_app
 from meeting_mgr.retention import select_purge_candidates
-from meeting_mgr.storage import delete_object
+from meeting_mgr.storage import delete_object, get_object
 
 logger = logging.getLogger(__name__)
+
+_MISSING = {"404", "NoSuchKey", "NotFound"}
+
+
+def _manifest_chunk_keys(manifest_key: str) -> list[str]:
+    """Read a browser-capture chunk manifest and return the object keys it
+    lists. Returns [] if the manifest itself is already gone -- a re-run
+    after a crash that got as far as deleting the manifest, or a purge of a
+    capture that never finished uploading one -- rather than raising, since
+    "nothing left to delete" is the correct reading of a missing manifest,
+    not a failure."""
+    try:
+        raw = get_object(manifest_key)
+    except ClientError as e:
+        if e.response.get("Error", {}).get("Code") in _MISSING:
+            return []
+        raise
+    return json.loads(raw)
 
 
 def _purge_audio_objects(s, meeting_id: int) -> list[str]:
     """Delete this Meeting's audio objects from storage (idempotent) and
     return the keys removed, for the audit detail. Touches storage only --
     the caller deletes the Recording/Meeting row afterward, in the same
-    get_org_session transaction."""
+    get_org_session transaction.
+
+    A browser-capture Recording's raw_key is "manifest:<key>", not an object
+    key itself (normalize.py's _write_manifest_chunks reads the same
+    prefix) -- it points at a small JSON array of chunk keys. Deleting that
+    straight would silently no-op and leak the manifest plus every chunk
+    forever. Instead: read the manifest, delete every chunk it lists, and
+    delete the manifest itself LAST. That order matters for crash recovery:
+    if the process dies after some chunk deletes but before the manifest is
+    gone, the manifest is still readable, so the next sweep re-derives the
+    same chunk list (each delete is idempotent, so re-deleting an
+    already-gone chunk is a no-op) and finishes by deleting the manifest. If
+    the manifest were deleted first and the process died before the chunks
+    were, the chunk list would be unrecoverable and those objects would leak
+    forever -- the same failure mode this fix exists to close, just moved
+    one step later. Deleting the manifest is itself idempotent
+    (_manifest_chunk_keys treats "already gone" as "no chunks left to
+    report"), so a crash after the manifest delete but before the
+    Recording/Meeting row delete is also safely re-run by the next sweep."""
     rec = s.query(Recording).filter_by(meeting_id=meeting_id).one_or_none()
     if rec is None:
         return []
-    keys = [k for k in (rec.raw_key, rec.normalized_key) if k]
-    for key in keys:
-        delete_object(key)
+    keys: list[str] = []
+    if rec.raw_key and rec.raw_key.startswith("manifest:"):
+        manifest_key = rec.raw_key.removeprefix("manifest:")
+        chunk_keys = _manifest_chunk_keys(manifest_key)
+        for key in chunk_keys:
+            delete_object(key)
+        delete_object(manifest_key)
+        keys.extend(chunk_keys)
+        keys.append(manifest_key)
+    elif rec.raw_key:
+        delete_object(rec.raw_key)
+        keys.append(rec.raw_key)
+    if rec.normalized_key:
+        delete_object(rec.normalized_key)
+        keys.append(rec.normalized_key)
     return keys
 
 
