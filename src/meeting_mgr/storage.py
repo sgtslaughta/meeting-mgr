@@ -61,6 +61,18 @@ class RangeNotSatisfiable(Exception):
     """The requested range starts past the end of the object."""
 
 
+def list_keys(prefix: str) -> list[str]:
+    """List object keys under a prefix -- keys only, never bodies. Exists so
+    capture-chunk resumability (GET /meetings/{id}/capture/chunks) never
+    needs to download a chunk merely to know it exists."""
+    paginator = _client().get_paginator("list_objects_v2")
+    keys: list[str] = []
+    for page in paginator.paginate(Bucket=get_settings().s3_bucket, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys.append(obj["Key"])
+    return keys
+
+
 def open_object(key: str, byte_range: str | None = None):
     """Open an object for streaming, optionally a byte range.
 
