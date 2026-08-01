@@ -20,7 +20,7 @@ unreachable in application code.
 
 from meeting_mgr.audit import record_audit
 from meeting_mgr.db import get_org_session
-from meeting_mgr.models import Recording
+from meeting_mgr.models import Meeting, Recording
 from meeting_mgr.storage import delete_object
 
 
@@ -60,6 +60,38 @@ def purge_meeting_audio(org_id: int, meeting_id: int) -> None:
                 organization_id=org_id,
                 actor_account_id=None,
                 action="meeting.purge.audio",
+                target=f"meeting:{meeting_id}",
+                detail={"keys_deleted": len(keys)},
+            )
+
+
+def purge_meeting_full(org_id: int, meeting_id: int) -> None:
+    """Hard-delete a Meeting: audio objects, then the Meeting row. Every
+    child artifact table cascades from meeting.id via ON DELETE CASCADE at
+    the database level -- deleting the Meeting row is sufficient, nothing
+    here re-implements the cascade by hand. This holds even though every
+    child table has its own RLS policy (c4d8e2f1a6b3): Postgres documents
+    that referential-integrity actions, including ON DELETE CASCADE, always
+    bypass row security ("Row Security Policies" -- "Referential integrity
+    checks ... always bypass row security to ensure that data integrity is
+    maintained"), so the cascade completes even though, by the time it
+    fires, the parent `meeting` row the child policies subquery no longer
+    contains this id. test_purge_meeting_full_removes_the_meeting_and_
+    every_child_row asserts this directly rather than assuming it.
+
+    Participant rows are NOT deleted: Participant is organization-scoped
+    (CONTEXT.md), not Meeting-scoped, and has no FK to meeting -- it may be
+    referenced by other Meetings' ActionItems or Attributions.
+    """
+    with get_org_session(org_id) as s:
+        keys = _purge_audio_objects(s, meeting_id)
+        deleted = s.query(Meeting).filter_by(id=meeting_id).delete()
+        if deleted:
+            record_audit(
+                s,
+                organization_id=org_id,
+                actor_account_id=None,
+                action="meeting.purge.full",
                 target=f"meeting:{meeting_id}",
                 detail={"keys_deleted": len(keys)},
             )
