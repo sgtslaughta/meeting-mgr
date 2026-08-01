@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { listMeetings, uploadMeeting } from "../api";
+import { CaptureRecorder } from "../components/CaptureRecorder";
 import type { MeetingSummary } from "../types";
 
 export function MeetingList() {
@@ -27,6 +28,7 @@ export function MeetingList() {
                onChange={(e) => setFile(e.target.files?.[0] ?? null)} required />
         <button type="submit">Upload</button>
       </form>
+      <CaptureRecorder onFinished={reload} />
       <ul>
         {meetings.map((m) => (
           <li key={m.id}>
