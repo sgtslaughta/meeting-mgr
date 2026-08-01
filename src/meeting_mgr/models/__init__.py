@@ -1,4 +1,5 @@
 from meeting_mgr.models.account import ROLES, Account
+from meeting_mgr.models.audit import AuditLogEntry
 from meeting_mgr.models.meeting import (
     Meeting,
     MeetingShare,
@@ -12,6 +13,7 @@ from meeting_mgr.models.transcript import Attribution, Segment, SpeakerCluster
 __all__ = [
     "Account",
     "ROLES",
+    "AuditLogEntry",
     "Organization",
     "Meeting",
     "MeetingShare",
