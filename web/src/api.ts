@@ -1,8 +1,16 @@
 import type { ArtifactPatch, ArtifactType, MeetingDetail, MeetingSummary } from "./types";
 
+export class ApiError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init);
-  if (!r.ok) throw new Error(`${init?.method ?? "GET"} ${url} failed: ${r.status}`);
+  if (!r.ok) throw new ApiError(r.status, `${init?.method ?? "GET"} ${url} failed: ${r.status}`);
   return r.json() as Promise<T>;
 }
 
@@ -38,7 +46,7 @@ export async function deleteArtifact(meetingId: number, type: ArtifactType,
                                      itemId: number) {
   const r = await fetch(`/meetings/${meetingId}/${type}/${itemId}`,
                         { method: "DELETE" });
-  if (!r.ok) throw new Error(`DELETE failed: ${r.status}`);
+  if (!r.ok) throw new ApiError(r.status, `DELETE failed: ${r.status}`);
 }
 
 export const regenerate = (meetingId: number, type: ArtifactType) =>

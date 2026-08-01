@@ -2,6 +2,7 @@ import { render, screen, fireEvent, waitFor, act } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import { Artifacts } from "../src/components/Artifacts";
 import * as api from "../src/api";
+import * as AuthCtx from "../src/AuthContext";
 
 const meeting = {
   id: 7, title: "standup", status: "published" as const,
@@ -147,5 +148,31 @@ describe("Artifacts", () => {
     render(<Artifacts meetingId={7} meeting={noCites}
                       onChanged={() => {}} onCiteClick={() => {}} />);
     expect(screen.getByDisplayValue("no evidence")).toBeInTheDocument();
+  });
+
+  it("shows mutation controls for a member but hides them for an auditor", () => {
+    // This is UX only — Task 10's server-side 403 is the actual enforcement.
+    // Proving the hide/show split here still guards against the control
+    // regressing to "always visible", which the backend test can't catch.
+    const asRole = (role: "member" | "auditor") =>
+      vi.spyOn(AuthCtx, "useAuth").mockReturnValue({
+        account: { id: 1, email: "a@x.com", role, organization_id: 1 },
+        loading: false, refresh: () => {},
+      });
+
+    asRole("member");
+    const memberRender = render(<Artifacts meetingId={7} meeting={meeting}
+                      onChanged={() => {}} onCiteClick={() => {}} />);
+    expect(screen.getByRole("button", { name: /delete/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /regenerate/i }).length).toBeGreaterThan(0);
+    expect(screen.getByDisplayValue("budget")).not.toBeDisabled();
+    memberRender.unmount();
+
+    asRole("auditor");
+    render(<Artifacts meetingId={7} meeting={meeting}
+                      onChanged={() => {}} onCiteClick={() => {}} />);
+    expect(screen.queryByRole("button", { name: /delete/i })).not.toBeInTheDocument();
+    expect(screen.queryAllByRole("button", { name: /regenerate/i }).length).toBe(0);
+    expect(screen.getByDisplayValue("budget")).toBeDisabled();
   });
 });
