@@ -3,6 +3,7 @@ from celery import Celery
 from meeting_mgr.config import get_settings
 from meeting_mgr.db import get_session
 from meeting_mgr.models import Meeting
+from meeting_mgr.pipeline.bot_config import BOT_SWEEP_INTERVAL_SECONDS
 from meeting_mgr.pipeline.watch_config import SCAN_INTERVAL_SECONDS
 
 celery_app = Celery(
@@ -21,6 +22,7 @@ celery_app = Celery(
         "meeting_mgr.api.edits",
         "meeting_mgr.pipeline.purge",
         "meeting_mgr.pipeline.watch",
+        "meeting_mgr.pipeline.bot",
     ],
 )
 celery_app.conf.update(
@@ -39,6 +41,10 @@ celery_app.conf.beat_schedule = {
         # derives from (2x this) -- a literal here would let the two drift
         # apart, making a healthy watcher eventually read as dead.
         "schedule": float(SCAN_INTERVAL_SECONDS),
+    },
+    "sweep-stale-bot-sessions": {
+        "task": "meeting_mgr.sweep_stale_bot_sessions",
+        "schedule": float(BOT_SWEEP_INTERVAL_SECONDS),
     },
 }
 
