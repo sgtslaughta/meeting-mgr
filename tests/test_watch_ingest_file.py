@@ -1,4 +1,6 @@
 import io
+import logging
+import os
 import uuid
 
 import pytest
@@ -83,13 +85,11 @@ def test_ingest_file_does_not_reingest_on_a_rescan_of_the_root(tmp_path, monkeyp
 
     # Simulate a re-scan of the root: nothing left at the original path to
     # find and re-ingest.
-    import os
-
     assert set(os.listdir(tmp_path)) == {".ingested"}
 
     with get_session() as s:
         assert s.query(Meeting).filter_by(organization_id=org_id).count() == 1
-    assert first_id > 0
+    assert first_id is not None and first_id > 0
 
 
 def test_ingest_file_moves_the_source_into_dot_failed_and_reraises_on_upload_error(
@@ -154,7 +154,7 @@ def test_ingest_file_skips_a_file_that_changed_since_the_stability_check(tmp_pat
 
     result = pipeline.watch.ingest_file(wf, str(src))
 
-    assert result == 0
+    assert result is None
     assert src.exists()
     assert src.read_bytes() == b"audio-bytes"
     assert not (tmp_path / ".ingested").exists()
@@ -188,3 +188,46 @@ def test_ingest_file_streams_the_upload_rather_than_buffering_it_whole(tmp_path,
     assert captured["is_bytes"] is False
     assert captured["has_chunked_read"] is True
     assert isinstance(captured["fileobj"], io.BufferedIOBase)
+
+
+def test_ingest_file_does_not_double_ingest_when_the_move_to_dot_ingested_fails(
+    tmp_path, monkeypatch, caplog
+):
+    """The move to .ingested/ happens before commit specifically so a failed
+    move rolls the transaction back instead of leaving a committed Meeting
+    whose file a later scan finds and ingests a second time. Also asserts
+    the failure is logged with the path so an operator can see it."""
+    from meeting_mgr import pipeline
+
+    ensure_bucket()
+    monkeypatch.setattr(pipeline.watch, "run_pipeline", lambda meeting_id: None)
+    org_id = _org()
+    wf = _watch_folder(org_id, str(tmp_path))
+    src = tmp_path / "rec.wav"
+    src.write_bytes(b"audio-bytes")
+
+    real_move_into = pipeline.watch._move_into
+
+    def _flaky_move(root, subdir, path):
+        if subdir == ".ingested":
+            raise OSError("disk full")
+        return real_move_into(root, subdir, path)
+
+    monkeypatch.setattr(pipeline.watch, "_move_into", _flaky_move)
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(OSError):
+            pipeline.watch.ingest_file(wf, str(src))
+
+    # No duplicate: the transaction rolled back, nothing was committed.
+    with get_session() as s:
+        assert s.query(Meeting).filter_by(organization_id=org_id).count() == 0
+
+    # The failed move is visible to an operator.
+    assert any(str(src) in r.message for r in caplog.records)
+
+    # Failure handling still relocated the source into .failed/, so a
+    # re-scan of the root finds nothing left there to re-ingest.
+    assert not src.exists()
+    assert (tmp_path / ".failed" / "rec.wav").exists()
+    assert "rec.wav" not in os.listdir(tmp_path)

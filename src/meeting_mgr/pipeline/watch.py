@@ -14,6 +14,7 @@ SCAN_INTERVAL_SECONDS lives in pipeline/watch_config.py (Task 3), not here
 file would give Task 3 a forward dependency on this one.
 """
 
+import logging
 import os
 import time
 
@@ -23,6 +24,8 @@ from meeting_mgr.pipeline.watch_config import (
     SCAN_INTERVAL_SECONDS,  # noqa: F401 -- re-exported for pipeline/app.py's beat comment and any caller importing it from here
 )
 from meeting_mgr.storage import ensure_bucket, put_stream
+
+logger = logging.getLogger(__name__)
 
 STABLE_QUIET_SECONDS = 30
 
@@ -76,31 +79,51 @@ class _StaleFile(Exception):
     DO move the file to .failed/ and re-raise."""
 
 
-def ingest_file(watch_folder, path: str) -> int:
+def ingest_file(watch_folder, path: str) -> int | None:
     """Ingest one file the caller has already judged stable via _is_stable().
 
     That check is point-in-time: nothing stops a copy that resumed after it
     from being read here truncated. The guard is a (size, mtime) snapshot
     taken as the first thing this function does -- as close as possible to
     the caller's own check -- compared against a second snapshot taken
-    immediately before the open()/put_stream() read. Only a Meeting
-    insert/flush (no filesystem I/O) separates the two, so the unguarded
-    window is just that DB round trip plus the handful of Python statements
-    on either side of it -- not the callers'-check-to-read gap, which is
-    fully covered. A mismatch means a writer resumed; the file is skipped
-    this pass, not ingested, and picked up again once genuinely quiet.
+    immediately before the open()/put_stream() read. A Meeting insert/flush
+    (a network round trip to Postgres to get m.id for the storage key, not
+    filesystem I/O -- it still widens the window) plus a handful of Python
+    statements separate the two, so the unguarded gap is that round trip,
+    not the callers'-check-to-read gap, which is fully covered. A mismatch
+    means a writer resumed; the file is skipped this pass -- returns None,
+    not ingested -- and picked up again once genuinely quiet.
 
-    Storage upload happens before the row is committed; if it raises, the
-    Meeting/Recording insert rolls back (no row exists) and the source is
-    moved to .failed/ instead of .ingested/, then the exception is
+    The move to .ingested/ happens INSIDE the transaction, before commit,
+    not after: filesystem placement is the only idempotency key (no
+    ingestion ledger), so a move that fails after the row was already
+    committed would leave a committed Meeting whose source file is still
+    sitting at its original path -- the next scan finds it and ingests it
+    again, a second Meeting for the same bytes. Attempting the move before
+    commit means a failed move raises inside the `with` block, which rolls
+    the transaction back via the same path as any other ingest failure
+    below: no row survives, and the file (still at its original path,
+    os.replace() never partially applies) is handed to the existing
+    .failed/ handling. The residual risk this doesn't remove is a crash
+    between a successful move and the commit a few lines later, which
+    would leave an orphaned S3 object and a relocated file with no Meeting
+    row -- recoverable by an operator (the bytes are not gone), unlike the
+    guaranteed duplicate the old commit-then-move order produced on every
+    ordinary move failure (disk full, permissions, cross-device).
+
+    Storage upload happens before the row is committed; if anything past
+    this point raises, the Meeting/Recording insert rolls back (no row
+    exists), the failure is logged with the path/meeting_id/error, the
+    source is moved to .failed/ instead of .ingested/, and the exception is
     re-raised so scan_watch_folder() (Task 6) can record it as this scan's
     last_scan_error without aborting the scan for other files."""
     ensure_bucket()
     try:
         baseline = _stat_signature(path)
     except FileNotFoundError:
-        return 0
+        return None
 
+    meeting_id = None
     try:
         with get_org_session(watch_folder.organization_id) as s:
             m = Meeting(
@@ -111,19 +134,25 @@ def ingest_file(watch_folder, path: str) -> int:
             )
             s.add(m)
             s.flush()
+            meeting_id = m.id
             key = f"raw/{m.id}/{os.path.basename(path)}"
             if _stat_signature(path) != baseline:
                 raise _StaleFile(path)
             with open(path, "rb") as fh:
                 put_stream(key, fh)
             s.add(Recording(meeting_id=m.id, raw_key=key))
-            meeting_id = m.id
+            _move_into(watch_folder.root_path, ".ingested", path)
     except _StaleFile:
-        return 0
-    except Exception:
+        return None
+    except Exception as exc:
+        logger.error(
+            "watch folder ingest failed: path=%s meeting_id=%s error=%r",
+            path,
+            meeting_id,
+            exc,
+        )
         _move_into(watch_folder.root_path, ".failed", path)
         raise
 
-    _move_into(watch_folder.root_path, ".ingested", path)
     run_pipeline(meeting_id)
     return meeting_id
